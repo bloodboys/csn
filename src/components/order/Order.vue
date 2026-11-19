@@ -17,17 +17,27 @@
             </el-row>
 
             <!-- 订单列表数据-->
-            <el-table :data="orderList.slice((queryInfo.pagenum-1)*queryInfo.pagesize,queryInfo.pagenum*queryInfo.pagesize)" border stripe>
+            <el-table :data="orderList" border stripe>
                 <el-table-column type="index"></el-table-column>
                 <el-table-column label="订单编号" prop="order_number"></el-table-column>
                 <el-table-column label="订单价格" prop="order_price"></el-table-column>
                 <el-table-column label="是否付款" prop="pay_status">
                     <template slot-scope="scope">
-                        <el-tag type="success" v-if="scope.row.pay_status === '1'">已付款</el-tag>
+                        <el-tag type="success" v-if="scope.row.pay_status === 1">已付款</el-tag>
                         <el-tag type="danger" v-else>未付款</el-tag>
                     </template>
                 </el-table-column>
-                <el-table-column label="是否发货" prop="is_send"></el-table-column>
+                <el-table-column label="是否发货" prop="is_send">
+                    <template slot-scope="scope">
+                        <el-tag type="success" v-if="scope.row.is_send === 1">已发货</el-tag>
+                        <el-tag type="info" v-else>未发货</el-tag>
+                    </template>
+                </el-table-column>
+                <el-table-column label="收货地址" prop="address" min-width="200px">
+                    <template slot-scope="scope">
+                        {{ scope.row.address || '未填写' }}
+                    </template>
+                </el-table-column>
                 <el-table-column label="下单时间" prop="create_time">
                     <template slot-scope="scope">
                         {{scope.row.create_time | dateFormat}}
@@ -35,7 +45,7 @@
                 </el-table-column>
                 <el-table-column label="操作">
                     <template v-slot="scope">
-                        <el-button type="primary" icon="el-icon-edit" size="mini" @click="showBox"></el-button>
+                        <el-button type="primary" icon="el-icon-edit" size="mini" v-if="isAdmin" @click="showBox(scope.row)"></el-button>
                         <el-button type="success" icon="el-icon-location" size="mini"
                                    @click="showProgressBox(scope.row.logistics)"></el-button>
                     </template>
@@ -49,7 +59,7 @@
                     :page-sizes="[5, 10, 15]"
                     :page-size="queryInfo.pagesize"
                     layout="total, sizes, prev, pager, next, jumper"
-                    :total="orderList.length">
+                    :total="total">
             </el-pagination>
         </el-card>
         <!-- 修改地址对话框-->
@@ -69,7 +79,7 @@
             </el-form>
             <span slot="footer" class="dialog-footer">
                 <el-button @click="addressVisible = false">取 消</el-button>
-                <el-button type="primary" @click="addressVisible = false">确 定</el-button>
+                <el-button type="primary" @click="saveAddress">确 定</el-button>
             </span>
         </el-dialog>
 
@@ -122,7 +132,13 @@ export default {
       },
       cityData: cityData,
       progressVisible: false,
-      progressInfo: []
+      progressInfo: [],
+      currentOrder: {}
+    }
+  },
+  computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
     }
   },
   created () {
@@ -130,47 +146,98 @@ export default {
   },
   methods: {
     async getOrderList () {
-      this.$api.order().then((res) => {
+      this.$api.order({
+        pagenum: this.queryInfo.pagenum,
+        pagesize: this.queryInfo.pagesize
+      }).then((res) => {
         if (res.data.status === 200) {
-          this.orderList = res.data.result
+          this.orderList = res.data.result || []
+          this.total = res.data.total || 0
         }
       })
     },
     handleSizeChange (newSize) {
       this.queryInfo.pagesize = newSize
-      this.getOrderList()
+      this.getDataList()
     },
     handleCurrentChange (newPage) {
       this.queryInfo.pagenum = newPage
-      this.getOrderList()
+      this.getDataList()
+    },
+    // 统一数据加载：有搜索词走搜索，否则走列表（翻页时保留搜索条件）
+    getDataList () {
+      if (this.queryInfo.query) {
+        this.$api.ordersearch({
+          search: this.queryInfo.query,
+          pagenum: this.queryInfo.pagenum,
+          pagesize: this.queryInfo.pagesize
+        }).then((res) => {
+          if (res.data.status === 200) {
+            this.orderList = res.data.result || []
+            this.total = res.data.total || 0
+          }
+        })
+      } else {
+        this.getOrderList()
+      }
     },
     // 展示修改地址对话框
-    showBox () {
+    showBox (row) {
+      this.currentOrder = row
+      // 回显已有地址（格式：省/市/区 详细地址）
+      const addr = row.address || ''
+      if (addr) {
+        const idx = addr.indexOf(' ')
+        if (idx !== -1) {
+          this.addressForm.address1 = addr.slice(0, idx).split('/')
+          this.addressForm.address2 = addr.slice(idx + 1)
+        } else {
+          this.addressForm.address1 = []
+          this.addressForm.address2 = addr
+        }
+      } else {
+        this.addressForm.address1 = []
+        this.addressForm.address2 = ''
+      }
       this.addressVisible = true
+    },
+    // 保存地址（前端校验 + 调后端接口）
+    saveAddress () {
+      this.$refs.addressFormRef.validate(valid => {
+        if (!valid) {
+          return this.$message.error('请完整填写地址信息')
+        }
+        const address = this.addressForm.address1.join('/') + ' ' + this.addressForm.address2
+        this.$api.updateOrderAddress({
+          order_id: this.currentOrder.order_id,
+          address: address
+        }).then((res) => {
+          if (res.data.status === 200) {
+            this.$message.success('地址已保存')
+            this.addressVisible = false
+            this.getOrderList()
+          } else {
+            this.$message.error(res.data.msg || '地址保存失败')
+          }
+        })
+      })
     },
     addressDialogClosed () {
       this.$refs.addressFormRef.resetFields()
     },
     // 物流进度展示
     showProgressBox (info) {
-      this.progressInfo = JSON.parse(info)
+      try {
+        this.progressInfo = JSON.parse(info || '[]')
+      } catch (e) {
+        this.progressInfo = []
+      }
       this.progressVisible = true
     },
     // 订单查询
     onSubmitSearch () {
-      this.$api
-        .ordersearch({
-          search: this.queryInfo.query
-        })
-        .then((res) => {
-          if (res.data.status === 200) {
-            this.queryInfo.pagenum = 1
-            this.orderList = res.data.result
-          }
-        })
-        .catch((error) => {
-          console.log(error)
-        })
+      this.queryInfo.pagenum = 1
+      this.getDataList()
     }
   }
 }

@@ -10,16 +10,16 @@
         <el-card>
             <el-row :gutter="20">
                 <el-col :span="8">
-                    <el-input placeholder="请输入内容" v-model="queryInfo.query" clearable @clear="getFoodsList">
+                    <el-input placeholder="请输入菜品名称" v-model="queryInfo.query" clearable @clear="getFoodsList">
                         <el-button slot="append" icon="el-icon-search" @click="onSubmitSearch"></el-button>
                     </el-input>
                 </el-col>
                 <el-col :span="4">
-                    <el-button type="primary" @click="goAddpage">添加菜品</el-button>
+                    <el-button type="primary" v-if="isAdmin" @click="goAddpage">添加菜品</el-button>
                 </el-col>
             </el-row>
             <!-- table 表格区域-->
-            <el-table :data="foodslist.slice((queryInfo.pagenum-1)*queryInfo.pagesize,queryInfo.pagenum*queryInfo.pagesize)" border stripe>
+            <el-table :data="foodslist" border stripe>
                 <el-table-column type="index"></el-table-column>
                 <el-table-column label="菜品名称" prop="foods_name"></el-table-column>
                 <el-table-column label="菜品价格(元)" prop="foods_price" width="95px"></el-table-column>
@@ -31,10 +31,12 @@
                 </el-table-column>
                 <el-table-column label="操作" width="230px">
                     <template slot-scope="scope">
+                        <template v-if="isAdmin">
                         <el-button type="primary" icon="el-icon-edit" size="mini" @click="showEditListDialog(scope.row.foods_id)">编辑</el-button>
                         <el-button type="danger" icon="el-icon-delete" size="mini"
                                    @click="removeById(scope.row.foods_id)">删除
                         </el-button>
+                        </template>
                     </template>
                 </el-table-column>
 
@@ -47,7 +49,7 @@
                     :page-sizes="[5, 10, 15, 20]"
                     :page-size="queryInfo.pagesize"
                     layout="total, sizes, prev, pager, next, jumper"
-                    :total="foodslist.length" background>
+                    :total="total" background>
             </el-pagination>
         </el-card>
         <!-- 编辑菜品的对话框 -->
@@ -72,25 +74,30 @@
                             <el-input v-model="editListForm.foods_name"></el-input>
                         </el-form-item>
                         <el-form-item label="菜品数量：" prop="foods_number">
-                            <el-input v-model="editListForm.foods_number"></el-input>
+                            <el-input v-model="editListForm.foods_number" type="number"></el-input>
                         </el-form-item>
                         <el-form-item label="菜品价格：" prop="foods_price">
-                            <el-input v-model="editListForm.foods_price"></el-input>
+                            <el-input v-model="editListForm.foods_price" type="number"></el-input>
+                        </el-form-item>
+                        <el-form-item label="菜品重量：">
+                            <el-input v-model="editListForm.foods_weight" placeholder="如 500g"></el-input>
                         </el-form-item>
                        <el-form-item label="菜品参数：">
                           <!-- 渲染表单的Item项 -->
                           <el-form-item v-for="item in manyTableData" :key="item.attr_id" :label="item.attr_name">
                               <!-- 复选框组 -->
-                              <el-checkbox-group v-model="item.attr_vals">
-                                  <el-checkbox :label="cb" v-for="(cb,i) in item.attr_vals" :key="i" border></el-checkbox>
-                              </el-checkbox-group>
+                              <el-radio-group v-model="item.selected_val">
+                                  <el-radio :label="cb" v-for="(cb,i) in item.attr_vals" :key="i" border>{{cb}}</el-radio>
+                              </el-radio-group>
                           </el-form-item>
+                          <span v-if="manyTableData.length === 0" class="empty-tip">该分类下暂无动态参数</span>
                           </el-form-item>
                           <el-form-item label="菜品属性：">
 
                         <el-form-item :label="item.attr_name" v-for="item in onlyTableData" :key="item.attr_id">
-                            <el-input v-model="item.attr_vals[0]"></el-input>
+                            <el-input v-model="item.attr_vals"></el-input>
                         </el-form-item>
+                        <span v-if="onlyTableData.length === 0" class="empty-tip">该分类下暂无静态属性</span>
                         </el-form-item>
                         <el-form-item label="菜品图片：">
                             <!-- action 图片要上传的服务器地址
@@ -98,6 +105,7 @@
                             -->
                             <el-upload
                                     :action="uploadURL"
+                                    :file-list="fileList"
                                     :on-preview="handlePreview"
                                     :on-remove="handleRemove"
                                     list-type="picture" :headers="headerObj" :on-success="handleSuccess">
@@ -166,10 +174,12 @@ export default {
       uploadURL: 'http://localhost:3000/api/upload',
       // 图片上传组件的headers请求头对象
       headerObj: {
-        Authorization: localStorage.getItem('csn')
+        Authorization: JSON.parse(localStorage.getItem('csn') || '{}').token || ''
       },
       previewPath: '',
       previewVisible: false,
+      // 图片上传组件展示用 file-list
+      fileList: [],
       // 菜品分类列表
       cateList: [],
       cateProps: {
@@ -183,41 +193,56 @@ export default {
       onlyTableData: []
     }
   },
+  computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
+    }
+  },
   created () {
     this.getFoodsList()
   },
   methods: {
     // 根据分页获取对应的菜品列表
     async getFoodsList () {
-      this.$api.foods().then((res) => {
+      this.$api.foods({
+        pagenum: this.queryInfo.pagenum,
+        pagesize: this.queryInfo.pagesize
+      }).then((res) => {
         if (res.data.status === 200) {
-          this.foodslist = res.data.result
+          this.foodslist = res.data.result || []
+          this.total = res.data.total || 0
         }
       })
     },
     handleSizeChange (newSize) {
       this.queryInfo.pagesize = newSize
-      this.getFoodsList()
+      this.getDataList()
     },
     handleCurrentChange (newPage) {
       this.queryInfo.pagenum = newPage
-      this.getFoodsList()
+      this.getDataList()
+    },
+    // 统一数据加载：有搜索词走搜索，否则走列表（翻页时保留搜索条件）
+    getDataList () {
+      if (this.queryInfo.query) {
+        this.$api.foodsearch({
+          search: this.queryInfo.query,
+          pagenum: this.queryInfo.pagenum,
+          pagesize: this.queryInfo.pagesize
+        }).then((res) => {
+          if (res.data.status === 200) {
+            this.foodslist = res.data.result || []
+            this.total = res.data.total || 0
+          }
+        })
+      } else {
+        this.getFoodsList()
+      }
     },
     // 菜品信息查询
     onSubmitSearch () {
-      this.$api
-        .foodsearch({
-          search: this.queryInfo.query
-        })
-        .then((res) => {
-          if (res.data.status === 200) {
-            this.queryInfo.pagenum = 1
-            this.foodslist = res.data.result
-          }
-        })
-        .catch((error) => {
-          console.log(error)
-        })
+      this.queryInfo.pagenum = 1
+      this.getDataList()
     },
     async removeById (id) {
       // 弹框询问用户是否删除数据
@@ -251,8 +276,19 @@ export default {
       await this.$api.preUpdatefood({ foods_id: food }).then((res) => {
         /* 赋值 */
         if (res.data.status === 200) {
-          this.editListForm = { foods_id: res.data.result[0].foods_id, foods_cat: res.data.result[0].cat_id.split(',').map(Number), foods_name: res.data.result[0].foods_name, foods_number: res.data.result[0].foods_number, foods_price: res.data.result[0].foods_price, attrs: res.data.result[0].attrs, pics: [], foods_introduce: res.data.result[0].foods_introduce }
-          console.log(res.data.result)
+          const r = res.data.result[0]
+          let pics = []
+          try {
+            pics = JSON.parse(r.pics || '[]')
+          } catch (e) {
+            pics = []
+          }
+          // fileList 用于 el-upload 展示已有图片
+          this.fileList = pics.map(p => ({
+            name: (p.pic || '').split('/').pop(),
+            url: 'http://localhost:3000/' + (p.pic || '').replace(/\\/g, '/').replace(/^upload\//, '')
+          }))
+          this.editListForm = { foods_id: r.foods_id, foods_cat: (r.cat_id || '').split(',').map(Number), foods_name: r.foods_name, foods_number: r.foods_number, foods_price: r.foods_price, foods_weight: r.foods_weight, attrs: r.attrs, pics: pics, foods_introduce: r.foods_introduce }
         } else {
           return this.$message.error('获取菜品失败!')
         }
@@ -260,25 +296,14 @@ export default {
         console.log(error)
       })
       this.getCateList()
-      // 根据所选分类的id和当前所选的面板，获取对应的参数和属性
-      await this.$api.cateparams().then((res) => {
-        if (res.data.status === 200) {
-          res.data.result.forEach(item => {
-          //   /* 将以空格隔开的字符串转换为数组 */
-            item.attr_vals = item.attr_vals ? item.attr_vals.split(',') : []
-          })
-          console.log(this.editListForm.foods_cat)
-          res.data.result = res.data.result.filter(ite => ite.cat_id === JSON.stringify(this.editListForm.foods_cat))
-          var many = res.data.result
-          var only = res.data.result
-          many = res.data.result.filter(ite => ite.attr_sel === 'many')
-          only = res.data.result.filter(ite => ite.attr_sel === 'only')
-          this.manyTableData = many
-          this.onlyTableData = only
-        }
-      }).catch(error => {
-        console.log(error)
-      })
+      // 解析菜品已选参数用于回显
+      let foodAttrs = []
+      try {
+        foodAttrs = JSON.parse(this.editListForm.attrs || '[]')
+      } catch (e) {
+        foodAttrs = []
+      }
+      await this.loadParams(JSON.stringify(this.editListForm.foods_cat), foodAttrs)
       this.editListDialogVisible = true
     },
     // 监听修改菜品对话框的关闭事件
@@ -292,33 +317,30 @@ export default {
         // 执行添加业务逻辑
         // lodash cloneDeep(obj)
 
-        this.editListForm.attrs = []
-
         const form = _.cloneDeep(this.editListForm)
         form.foods_cat = form.foods_cat.join(',')
-        // 处理动态参数
+        form.attrs = []
+        // 处理动态参数（单选）
         this.manyTableData.forEach(item => {
-          const newInfo = {
+          form.attrs.push({
             attr_id: item.attr_id,
-            attr_value: item.attr_vals.join(',')
-          }
-          this.editListForm.attrs.push(newInfo)
+            attr_value: item.selected_val
+          })
         })
         // 处理静态属性
         this.onlyTableData.forEach(item => {
-          const newInfo = {
+          form.attrs.push({
             attr_id: item.attr_id,
             attr_value: item.attr_vals
-          }
-          this.editListForm.attrs.push(newInfo)
+          })
         })
-        form.attrs = this.editListForm.attrs
         // 发起请求编辑菜品
         await this.$api.updatefood({
           foods_id: form.foods_id,
           foods_name: form.foods_name,
-          foods_price: form.foods_price,
-          foods_number: form.foods_number,
+          foods_price: Number(form.foods_price),
+          foods_number: Number(form.foods_number),
+          foods_weight: form.foods_weight,
           cat_id: form.foods_cat,
           attrs: JSON.stringify(form.attrs),
           pics: JSON.stringify(form.pics),
@@ -341,19 +363,26 @@ export default {
     },
     // 处理图片的预览效果
     handlePreview (file) {
-      this.previewPath = file.response.url.replace('upload', 'http://localhost:3000')
+      // 已有图片用 file.url，新上传图片用 file.response.url
+      let url = file.url || (file.response && file.response.url) || ''
+      url = url.replace(/https?:\/\/[^/]+\//, '').replace(/^\/+/, '').replace(/\\/g, '/').replace(/^upload\//, '')
+      this.previewPath = 'http://localhost:3000/' + url
       this.previewVisible = true
     },
     // 处理移除图片的操作
     handleRemove (file) {
-      // 1 获取要删除的图片的临时路径
-      const filePath = file.response.url
-      // 2 从 pics 数组中，找到这个图片对应的索引值
-      const i =
-                    this.editListForm.pics.findIndex(x =>
-                      x.pic === filePath)
-      // 3 调用数组的 Splice 方法，把图片信息对象，从 pics 数组中移除
-      this.editListForm.pics.splice(i, 1)
+      // 已有图片用 file.url，新上传图片用 file.response.url
+      let picUrl = ''
+      if (file.response && file.response.url) {
+        picUrl = file.response.url
+      } else if (file.url) {
+        picUrl = 'upload/' + file.url.replace(/https?:\/\/[^/]+\//, '').replace(/^\/+/, '')
+      }
+      if (!picUrl || !this.editListForm.pics) return
+      // 从 pics 数组中，找到这个图片对应的索引值
+      const i = this.editListForm.pics.findIndex(x => x.pic === picUrl)
+      // 调用数组的 Splice 方法，把图片信息对象从 pics 数组中移除
+      if (i !== -1) this.editListForm.pics.splice(i, 1)
     },
     // 监听图片上传成功的事件
     handleSuccess (response) {
@@ -368,16 +397,53 @@ export default {
     async getCateList () {
       // 把数据列表赋值给catelist
       this.$api.foodscate().then((res) => {
-        if (res.data.status === 200) {
+        if (res.data.status === 200 && res.data.result && res.data.result[0]) {
           this.cateList = JSON.parse(res.data.result[0].children)
+        } else {
+          this.cateList = []
         }
+      })
+    },
+    // 根据分类加载参数/属性（echoAttrs 用于回显；切换分类时传 null 清空回显）
+    loadParams (catId, echoAttrs) {
+      return this.$api.cateparams().then((res) => {
+        if (res.data.status !== 200) return
+        res.data.result.forEach(item => {
+          item.attr_vals = item.attr_vals ? item.attr_vals.split(',') : []
+          item.selected_val = ''
+        })
+        res.data.result = res.data.result.filter(ite => ite.cat_id === catId)
+        const many = res.data.result.filter(ite => ite.attr_sel === 'many')
+        const only = res.data.result.filter(ite => ite.attr_sel === 'only')
+        const attrs = echoAttrs || []
+        // 动态参数：回显选中值
+        many.forEach(item => {
+          const found = attrs.find(a => a.attr_id === item.attr_id)
+          item.selected_val = (found && found.attr_value) ? String(found.attr_value) : ''
+        })
+        // 静态属性：回显输入值（兼容历史数组格式）
+        only.forEach(item => {
+          const found = attrs.find(a => a.attr_id === item.attr_id)
+          let val = found ? found.attr_value : ''
+          if (Array.isArray(val)) val = val[0] || ''
+          item.attr_vals = val
+        })
+        this.manyTableData = many
+        this.onlyTableData = only
+      }).catch(error => {
+        console.log(error)
       })
     },
     // 级联选择器选中项变化，会触发这个函数
     handleChange () {
-      if (this.editListForm.foods_cat.length !== 3) {
+      if (!this.editListForm.foods_cat || this.editListForm.foods_cat.length !== 3) {
         this.editListForm.foods_cat = []
+        this.manyTableData = []
+        this.onlyTableData = []
+        return
       }
+      // 分类切换为三级时，重新加载该分类的参数/属性（清空旧回显）
+      this.loadParams(JSON.stringify(this.editListForm.foods_cat), null)
     }
   }
 }
@@ -389,5 +455,11 @@ export default {
     }
     .el-checkbox {
         margin: 0 10px 0 0 !important;
+    }
+
+    .empty-tip {
+        color: #909399;
+        font-size: 13px;
+        padding: 10px 0;
     }
 </style>

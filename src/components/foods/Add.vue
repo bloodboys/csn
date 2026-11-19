@@ -38,7 +38,7 @@
                             <el-input v-model="addForm.foods_price" type="number"></el-input>
                         </el-form-item>
                         <el-form-item label="菜品重量" prop="foods_weight">
-                            <el-input v-model="addForm.foods_weight" type="number"></el-input>
+                            <el-input v-model="addForm.foods_weight" placeholder="如 500g"></el-input>
                         </el-form-item>
                         <el-form-item label="菜品数量" prop="foods_number">
                             <el-input v-model="addForm.foods_number" type="number"></el-input>
@@ -59,15 +59,17 @@
                         <!-- 渲染表单的Item项 -->
                         <el-form-item v-for="item in manyTableData" :key="item.attr_id" :label="item.attr_name">
                             <!-- 复选框组 -->
-                            <el-checkbox-group v-model="item.attr_vals">
-                                <el-checkbox :label="cb" v-for="(cb,i) in item.attr_vals" :key="i" border></el-checkbox>
-                            </el-checkbox-group>
+                            <el-radio-group v-model="item.selected_val">
+                                <el-radio :label="cb" v-for="(cb,i) in item.attr_vals" :key="i" border>{{cb}}</el-radio>
+                            </el-radio-group>
                         </el-form-item>
+                        <div v-if="manyTableData.length === 0" class="empty-tip">该分类下暂无动态参数</div>
                     </el-tab-pane>
                     <el-tab-pane label="菜品属性" name="2">
                         <el-form-item :label="item.attr_name" v-for="item in onlyTableData" :key="item.attr_id">
                             <el-input v-model="item.attr_vals"></el-input>
                         </el-form-item>
+                        <div v-if="onlyTableData.length === 0" class="empty-tip">该分类下暂无静态属性</div>
                     </el-tab-pane>
                     <el-tab-pane label="菜品图片" name="3">
                         <!-- action 图片要上传的服务器地址
@@ -116,9 +118,9 @@ export default {
       // 添加菜品表单数据对象
       addForm: {
         foods_name: '',
-        foods_price: 0,
-        foods_weight: 0,
-        foods_number: 0,
+        foods_price: '',
+        foods_weight: '',
+        foods_number: '',
         // 菜品所属的分类数组
         foods_cat: [],
         // 图片数组
@@ -161,7 +163,7 @@ export default {
       uploadURL: 'http://localhost:3000/api/upload',
       // 图片上传组件的headers请求头对象
       headerObj: {
-        Authorization: localStorage.getItem('csn')
+        Authorization: JSON.parse(localStorage.getItem('csn') || '{}').token || ''
       },
       previewPath: '',
       previewVisible: false
@@ -175,34 +177,58 @@ export default {
     async getCateList () {
       // 把数据列表赋值给catelist
       this.$api.foodscate().then((res) => {
-        if (res.data.status === 200) {
+        if (res.data.status === 200 && res.data.result && res.data.result[0]) {
           this.cateList = JSON.parse(res.data.result[0].children)
+        } else {
+          this.cateList = []
         }
       })
     },
     // 级联选择器选中项变化，会触发这个函数
     handleChange () {
-      if (this.addForm.foods_cat.length !== 3) {
+      if (!this.addForm.foods_cat || this.addForm.foods_cat.length !== 3) {
         this.addForm.foods_cat = []
       }
+      // 分类改变，清空已加载的参数/属性，切到对应 tab 时重新加载
+      this.manyTableData = []
+      this.onlyTableData = []
     },
-    // 切换 tab会触发该函数
+    // 切换 tab 会触发该函数（离开基本信息时校验必填项）
     beforeTabLeave (activeName, oldActiveName) {
-      if (oldActiveName === '0' && this.addForm.foods_cat.length !== 3) {
-        this.$message.error('请先选择菜品分类')
+      if (oldActiveName !== '0') return
+      if (!this.addForm.foods_cat || this.addForm.foods_cat.length !== 3) {
+        this.$message.error('请先选择三级菜品分类')
+        return false
+      }
+      if (!this.addForm.foods_name) {
+        this.$message.error('请输入菜品名称')
+        return false
+      }
+      if (this.addForm.foods_price === '' || this.addForm.foods_price === null || this.addForm.foods_price === undefined) {
+        this.$message.error('请输入菜品价格')
+        return false
+      }
+      if (!this.addForm.foods_weight) {
+        this.$message.error('请输入菜品重量')
+        return false
+      }
+      if (this.addForm.foods_number === '' || this.addForm.foods_number === null || this.addForm.foods_number === undefined) {
+        this.$message.error('请输入菜品数量')
         return false
       }
     },
     // 点击tab页签触发
     async tabClicked () {
-      // 动态参数面板
-      if (this.activeIndex === '1') {
+      // 动态参数面板（仅首次加载，避免切 tab 丢失已勾选值）
+      if (this.activeIndex === '1' && this.manyTableData.length === 0) {
         // 根据所选分类的id和当前所选的面板，获取对应的参数
         this.$api.cateparams().then((res) => {
           if (res.data.status === 200) {
             res.data.result.forEach(item => {
-            //   /* 将以空格隔开的字符串转换为数组 */
+              // 将以逗号隔开的字符串转换为可选值数组
               item.attr_vals = item.attr_vals ? item.attr_vals.split(',') : []
+              // 已选中的值（新增菜品默认为空，单选）
+              item.selected_val = ''
             })
             res.data.result = res.data.result.filter(ite => ite.cat_id === JSON.stringify(this.addForm.foods_cat))
             res.data.result = res.data.result.filter(ite => ite.attr_sel === 'many')
@@ -211,12 +237,14 @@ export default {
         }).catch(error => {
           console.log(error)
         })
-      } else if (this.activeIndex === '2') {
+      } else if (this.activeIndex === '2' && this.onlyTableData.length === 0) {
         // 根据所选分类的id和当前所选的面板，获取对应的静态属性
         this.$api.cateparams().then((res) => {
           if (res.data.status === 200) {
             res.data.result = res.data.result.filter(ite => ite.cat_id === JSON.stringify(this.addForm.foods_cat))
             res.data.result = res.data.result.filter(ite => ite.attr_sel === 'only')
+            // 静态属性：attr_vals 作为输入值，初始为空字符串
+            res.data.result.forEach(item => { item.attr_vals = '' })
             this.onlyTableData = res.data.result
           }
         }).catch(error => {
@@ -226,19 +254,19 @@ export default {
     },
     // 处理图片的预览效果
     handlePreview (file) {
-      this.previewPath = file.response.url.replace('upload', 'http://localhost:3000')
+      const url = (file.response.url || '').replace(/\\/g, '/').replace('upload/', 'http://localhost:3000/')
+      this.previewPath = url
       this.previewVisible = true
     },
     // 处理移除图片的操作
     handleRemove (file) {
-      // 1 获取要删除的图片的临时路径
-      const filePath = file.response.url
-      // 2 从 pics 数组中，找到这个图片对应的索引值
-      const i =
-                    this.addForm.pics.findIndex(x =>
-                      x.pic === filePath)
-      // 3 调用数组的 Splice 方法，把图片信息对象，从 pics 数组中移除
-      this.addForm.pics.splice(i, 1)
+      // 获取要删除的图片的临时路径
+      const filePath = file.response && file.response.url
+      if (!filePath) return
+      // 从 pics 数组中，找到这个图片对应的索引值
+      const i = this.addForm.pics.findIndex(x => x.pic === filePath)
+      // 调用数组的 Splice 方法，把图片信息对象从 pics 数组中移除
+      if (i !== -1) this.addForm.pics.splice(i, 1)
     },
     // 监听图片上传成功的事件
     handleSuccess (response) {
@@ -260,30 +288,28 @@ export default {
         // lodash cloneDeep(obj)
         const form = _.cloneDeep(this.addForm)
         form.foods_cat = form.foods_cat.join(',')
-        // 处理动态参数
+        form.attrs = []
+        // 处理动态参数（单选）
         this.manyTableData.forEach(item => {
-          const newInfo = {
+          form.attrs.push({
             attr_id: item.attr_id,
-            attr_value: item.attr_vals.join(',')
-          }
-          this.addForm.attrs.push(newInfo)
+            attr_value: item.selected_val
+          })
         })
         // 处理静态属性
         this.onlyTableData.forEach(item => {
-          const newInfo = {
+          form.attrs.push({
             attr_id: item.attr_id,
             attr_value: item.attr_vals
-          }
-          this.addForm.attrs.push(newInfo)
+          })
         })
-        form.attrs = this.addForm.attrs
 
         // 发起请求添加菜品
         // 菜品的名称，必须是唯一的
         await this.$api.addfood({
           foods_name: form.foods_name,
-          foods_price: form.foods_price,
-          foods_number: form.foods_number,
+          foods_price: Number(form.foods_price),
+          foods_number: Number(form.foods_number),
           foods_weight: form.foods_weight,
           cat_id: form.foods_cat,
           attrs: JSON.stringify(form.attrs),
@@ -326,5 +352,12 @@ export default {
 
     .btnAdd {
         margin-top: 15px;
+    }
+
+    .empty-tip {
+        color: #909399;
+        font-size: 13px;
+        text-align: center;
+        padding: 30px 0;
     }
 </style>

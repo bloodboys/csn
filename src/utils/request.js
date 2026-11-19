@@ -1,6 +1,6 @@
 import axios from 'axios'
-import qs from 'querystring'
 import store from '../store'
+import { Message } from 'element-ui'
 
 /**
  * 处理失败的方法
@@ -52,16 +52,19 @@ const instance = axios.create({
  */
 instance.interceptors.request.use(
   config => {
-    // 防止post请求参数无法传到后台
-    if (config.method === 'post') {
-      config.data = qs.stringify(config.data)
-    }
     // 为请求头对象添加token验证的authorization
-    if (store.state.login.user.token) {
-      // config.headers.authorization = store.state.login.user.token
-      config.headers.authorization = localStorage.getItem('csn')
+    // 优先取 store，页面刷新后 store 重置则回退到 localStorage，避免请求 401
+    let token = store.state.login.user.token
+    if (!token) {
+      try {
+        token = JSON.parse(localStorage.getItem('csn') || '{}').token || ''
+      } catch (e) {
+        token = ''
+      }
     }
-    // console.log(config)
+    if (token) {
+      config.headers.authorization = token
+    }
     return config
   },
   error => Promise.reject(error)
@@ -77,7 +80,24 @@ instance.interceptors.response.use(
     const {
       response
     } = error
-    errorHandle(response.status, response.info)
+    if (!response) {
+      console.log('网络错误或服务器无响应')
+      return Promise.reject(error)
+    }
+    errorHandle(response.status, response.statusText)
+    // 401 未登录/token 失效时清理本地登录态
+    if (response.status === 401) {
+      localStorage.removeItem('csn')
+    }
+    // 403 无权限提示
+    if (response.status === 403) {
+      Message.error(response.data && response.data.msg ? response.data.msg : '无权限操作')
+    }
+    // 400 参数错误提示
+    if (response.status === 400) {
+      Message.error(response.data && response.data.msg ? response.data.msg : '请求参数错误')
+    }
+    return Promise.reject(error)
   }
 )
 

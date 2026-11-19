@@ -9,7 +9,18 @@ router.beforeEach((to, from, next) => {
   if (to.path === '/login') return next()
   // 获取token
   const tokenStr = localStorage.getItem('csn')
-  // const tokenStr = store.state.login.user.token
   if (!tokenStr) return next('/login')
+  // 管理员专属页面（写操作页面），普通用户直接访问时重定向回列表
+  const adminOnlyPaths = ['/foodlist/add']
+  if (adminOnlyPaths.indexOf(to.path) !== -1) {
+    try {
+      const user = JSON.parse(tokenStr)
+      if (user.rid !== 1) {
+        return next('/foodlist')
+      }
+    } catch (e) {
+      return next('/login')
+    }
+  }
   next()
 })

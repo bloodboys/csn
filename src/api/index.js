@@ -23,6 +23,32 @@ const api = {
     })
   },
   /**
+     * 权限树列表
+     */
+  rightstree (params) {
+    return axios.get(base.baseUrl + base.rightstree, {
+      params
+    })
+  },
+  /**
+     * 添加权限
+     */
+  addright (params) {
+    return axios.post(base.baseUrl + base.addright, params)
+  },
+  /**
+     * 编辑权限
+     */
+  updateright (params) {
+    return axios.put(base.baseUrl + base.updateright, params)
+  },
+  /**
+     * 删除权限
+     */
+  deleteright (params) {
+    return axios.delete(base.baseUrl + base.deleteright, { data: params })
+  },
+  /**
      * 商品总条数
      */
   total () {
@@ -48,17 +74,13 @@ const api = {
      * 添加用户
      */
   adduser (params) {
-    return axios.get(base.baseUrl + base.adduser, {
-      params
-    })
+    return axios.post(base.baseUrl + base.adduser, params)
   },
   /**
      * 商品删除
      */
   deleteUserById (params) {
-    return axios.get(base.baseUrl + base.deleteUserById, {
-      params
-    })
+    return axios.delete(base.baseUrl + base.deleteUserById, { data: params })
   },
   /**
      * 用户预更新
@@ -72,9 +94,7 @@ const api = {
      * 用户修改
      */
   updateUser (params) {
-    return axios.get(base.baseUrl + base.updateUser, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updateUser, params)
   },
   /**
      * 角色列表
@@ -114,17 +134,13 @@ const api = {
        * 用户状态修改
        */
   updateuserstate (params) {
-    return axios.get(base.baseUrl + base.updateuserstate, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updateuserstate, params)
   },
   /**
      * 角色权限删除
      */
   deleteRightById (params) {
-    return axios.get(base.baseUrl + base.deleteRightById, {
-      params
-    })
+    return axios.put(base.baseUrl + base.deleteRightById, params)
   },
   /**
      * 返回角色权限
@@ -155,9 +171,7 @@ const api = {
      * 添加角色
      */
   addrole (params) {
-    return axios.get(base.baseUrl + base.addrole, {
-      params
-    })
+    return axios.post(base.baseUrl + base.addrole, params)
   },
   /**
      * 角色预更新
@@ -171,17 +185,13 @@ const api = {
      * 角色修改
      */
   updateUserRole (params) {
-    return axios.get(base.baseUrl + base.updateUserRole, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updateUserRole, params)
   },
   /**
      * 角色删除
      */
   deleteRoleById (params) {
-    return axios.get(base.baseUrl + base.deleteRoleById, {
-      params
-    })
+    return axios.delete(base.baseUrl + base.deleteRoleById, { data: params })
   },
   /**
      * 菜品分类数据列表
@@ -195,9 +205,7 @@ const api = {
      * 添加菜品分类
      */
   addfoodscate (params) {
-    return axios.get(base.baseUrl + base.addfoodscate, {
-      params
-    })
+    return axios.post(base.baseUrl + base.addfoodscate, params)
   },
   /**
      * 编辑菜品分类预更新
@@ -211,15 +219,19 @@ const api = {
      * 菜品分类名修改
      */
   updateCate (params) {
-    return axios.get(base.baseUrl + base.updateCate, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updateCate, params)
   },
   /**
      * 菜品分类删除
      */
   deleteCateById (params) {
-    return axios.get(base.baseUrl + base.deleteCateById, {
+    return axios.put(base.baseUrl + base.deleteCateById, params)
+  },
+  /**
+     * 检查分类下菜品数
+     */
+  foodcountbycate (params) {
+    return axios.get(base.baseUrl + base.foodcountbycate, {
       params
     })
   },
@@ -235,9 +247,7 @@ const api = {
      * 添加分类参数
      */
   addcateparams (params) {
-    return axios.get(base.baseUrl + base.addcateparams, {
-      params
-    })
+    return axios.post(base.baseUrl + base.addcateparams, params)
   },
   /**
      * 分类参数预更新
@@ -251,17 +261,13 @@ const api = {
      * 分类参数修改
      */
   updateParams (params) {
-    return axios.get(base.baseUrl + base.updateParams, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updateParams, params)
   },
   /**
      * 分类参数删除
      */
   deleteParamsById (params) {
-    return axios.get(base.baseUrl + base.deleteParamsById, {
-      params
-    })
+    return axios.delete(base.baseUrl + base.deleteParamsById, { data: params })
   },
   /**
      * 菜品列表
@@ -283,25 +289,19 @@ const api = {
      * 菜品删除
      */
   deleteFoodById (params) {
-    return axios.get(base.baseUrl + base.deleteFoodById, {
-      params
-    })
+    return axios.delete(base.baseUrl + base.deleteFoodById, { data: params })
   },
   /**
      * 添加菜品
      */
   addfood (params) {
-    return axios.get(base.baseUrl + base.addfood, {
-      params
-    })
+    return axios.post(base.baseUrl + base.addfood, params)
   },
   /**
      * 菜品修改
      */
   updatefood (params) {
-    return axios.get(base.baseUrl + base.updatefood, {
-      params
-    })
+    return axios.put(base.baseUrl + base.updatefood, params)
   },
   /**
      * 编辑菜品预更新
@@ -328,10 +328,24 @@ const api = {
     })
   },
   /**
+     * 修改订单地址
+     */
+  updateOrderAddress (params) {
+    return axios.put(base.baseUrl + base.updateOrderAddress, params)
+  },
+  /**
      * 数据报表
      */
   report (params) {
     return axios.get(base.baseUrl + base.report, {
+      params
+    })
+  },
+  /**
+     * 数据统计（动态聚合）
+     */
+  statistics (params) {
+    return axios.get(base.baseUrl + base.statistics, {
       params
     })
   }

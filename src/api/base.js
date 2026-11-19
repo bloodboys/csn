@@ -3,6 +3,10 @@ const base = {
   register: '/api/register',
   login: '/api/login', // 用户登录
   rights: '/api/rights', // 权限列表
+  rightstree: '/api/rightstree', // 权限树列表
+  addright: '/api/addright', // 添加权限
+  updateright: '/api/updateright', // 编辑权限
+  deleteright: '/api/deleteright', // 删除权限
   total: '/api/total', // 商品总条数
   userSearch: '/api/usersearch', // 用户信息查询
   selectItemCategoryByParentId: '/api/backend/itemCategory/selectItemCategoryByParentId', // 类目选择
@@ -28,6 +32,7 @@ const base = {
   preUpdateCate: '/api/preUpdateCate', // 编辑菜品分类预更新
   updateCate: '/api/updateCate', // 菜品分类名修改
   deleteCateById: '/api/deleteCateById', // 菜品分类删除
+  foodcountbycate: '/api/foodcountbycate', // 检查分类下菜品数
   cateparams: '/api/cateparams', // 分类参数列表
   addcateparams: '/api/addcateparams', // 添加分类参数
   preUpdateParams: '/api/preUpdateParams', // 分类参数预更新
@@ -41,6 +46,8 @@ const base = {
   updatefood: '/api/updatefood', // 菜品修改
   order: '/api/order', // 订单列表
   ordersearch: '/api/ordersearch', // 订单查询
-  report: '/api/report' // 数据报表
+  updateOrderAddress: '/api/updateOrderAddress', // 修改订单地址
+  report: '/api/report', // 数据报表
+  statistics: '/api/statistics' // 数据统计（动态聚合）
 }
 export default base

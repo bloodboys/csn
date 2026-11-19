@@ -25,19 +25,18 @@
                         clearable></el-cascader>
                 </el-col>
             </el-row>
-            </el-row>
             <!-- tab 页签区域-->
             <el-tabs v-model="activeName" @tab-click="handleTabClick">
                 <!-- 添加动态参数的面板 -->
                 <el-tab-pane label="动态参数" name="many">
-                    <el-button type="primary" size="mini" :disabled="isBtnDisabled" @click="addDialogVisible = true">添加参数</el-button>
+                    <el-button type="primary" size="mini" v-if="isAdmin" :disabled="isBtnDisabled" @click="addDialogVisible = true">添加参数</el-button>
                     <!-- 动态参数表格 -->
                     <el-table :data="manyTableData" border stripe>
                         <!-- 展开行 -->
                         <el-table-column type="expand">
                             <template slot-scope="scope">
                                 <!-- 循环渲染tag标签 -->
-                                <el-tag v-for="(item,i) in scope.row.attr_vals" :key="i" closable
+                                <el-tag v-for="(item,i) in scope.row.attr_vals" :key="i" :closable="isAdmin"
                                     @close="handleClose(i,scope.row)">{{item}}
                                 </el-tag>
                                 <!-- 输入文本框 -->
@@ -47,7 +46,7 @@
                                     @blur="handleInputConfirm(scope.row)">
                                 </el-input>
                                 <!-- 按钮 -->
-                                <el-button v-else class="button-new-tag" size="small" @click="showInput(scope.row)">+
+                                <el-button v-else-if="isAdmin" class="button-new-tag" size="small" @click="showInput(scope.row)">+
                                     New Tag
                                 </el-button>
                             </template>
@@ -57,26 +56,28 @@
                         <el-table-column label="参数名称" prop="attr_name"></el-table-column>
                         <el-table-column label="操作">
                             <template slot-scope="scope">
+                                <template v-if="isAdmin">
                                 <el-button type="primary" size="mini" icon="el-icon-edit"
                                     @click="showEditDialog(scope.row.attr_id)">编辑
                                 </el-button>
                                 <el-button type="danger" size="mini" @click="removeParams(scope.row.attr_id)"
                                     icon="el-icon-delete">删除
                                 </el-button>
+                                </template>
                             </template>
                         </el-table-column>
                     </el-table>
                 </el-tab-pane>
                 <!-- 添加静态属性的面板 -->
                 <el-tab-pane label="静态属性" name="only">
-                    <el-button type="primary" size="mini" :disabled="isBtnDisabled" @click="addDialogVisible = true">添加属性</el-button>
+                    <el-button type="primary" size="mini" v-if="isAdmin" :disabled="isBtnDisabled" @click="addDialogVisible = true">添加属性</el-button>
                     <!-- 静态参数表格 -->
                     <el-table :data="onlyTableData" border stripe>
                         <!-- 展开行 -->
                         <el-table-column type="expand">
                             <template slot-scope="scope">
                                 <!-- 循环渲染tag标签 -->
-                                <el-tag v-for="(item,i) in scope.row.attr_vals" :key="i" closable
+                                <el-tag v-for="(item,i) in scope.row.attr_vals" :key="i" :closable="isAdmin"
                                     @close="handleClose(i,scope.row)">{{item}}
                                 </el-tag>
                                 <!-- 输入文本框 -->
@@ -86,7 +87,7 @@
                                     @blur="handleInputConfirm(scope.row)">
                                 </el-input>
                                 <!-- 按钮 -->
-                                <el-button v-else class="button-new-tag" size="small" @click="showInput(scope.row)">+
+                                <el-button v-else-if="isAdmin" class="button-new-tag" size="small" @click="showInput(scope.row)">+
                                     New Tag
                                 </el-button>
                             </template>
@@ -96,12 +97,14 @@
                         <el-table-column label="属性名称" prop="attr_name"></el-table-column>
                         <el-table-column label="操作">
                             <template slot-scope="scope">
+                                <template v-if="isAdmin">
                                 <el-button type="primary" size="mini" icon="el-icon-edit"
                                     @click="showEditDialog(scope.row.attr_id)">编辑
                                 </el-button>
                                 <el-button type="danger" size="mini" @click="removeParams(scope.row.attr_id)"
                                     icon="el-icon-delete">删除
                                 </el-button>
+                                </template>
                             </template>
                         </el-table-column>
                     </el-table>
@@ -202,8 +205,10 @@ export default {
     async getCateList () {
       // 把数据列表赋值给cateList
       this.$api.foodscate().then((res) => {
-        if (res.data.status === 200) {
+        if (res.data.status === 200 && res.data.result && res.data.result[0]) {
           this.cateList = JSON.parse(res.data.result[0].children)
+        } else {
+          this.cateList = []
         }
       })
     },
@@ -367,7 +372,13 @@ export default {
       /* 让文本框自动获得焦点 */
       /* $nextTick：页面中的元素被重新渲染后，才会回调函数中的代码 */
       this.$nextTick(_ => {
-        this.$refs.saveTagInput.$refs.input.focus()
+        // saveTagInput 位于 v-for 展开列中，this.$refs.saveTagInput 是数组
+        const input = Array.isArray(this.$refs.saveTagInput)
+          ? this.$refs.saveTagInput[0]
+          : this.$refs.saveTagInput
+        if (input && input.$refs && input.$refs.input) {
+          input.$refs.input.focus()
+        }
       })
     },
     // 将对save_vals的操作，保存到数据库
@@ -398,6 +409,9 @@ export default {
   },
 
   computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
+    },
     // 如果按钮需要被禁用,则返回true,否则返回false
     isBtnDisabled () {
       if (this.selectedCateKeys.length !== 3) {

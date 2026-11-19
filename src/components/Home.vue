@@ -28,7 +28,7 @@
                             <span>{{item.authName}}</span>
                         </template>
                         <!-- 二级菜单 -->
-                        <el-menu-item :index="'/'+subItem.path" v-for="subItem in JSON.parse(item.children)"
+                        <el-menu-item :index="'/'+subItem.path" v-for="subItem in item.children"
                             :key="subItem.id" @click="saveNavState('/'+subItem.path)">
                             <template slot="title">
                                 <!-- 图标 -->
@@ -75,17 +75,24 @@ export default {
   methods: {
     logout () {
       localStorage.removeItem('csn')
+      this.$store.commit('login/setUser', { username: '', token: '' })
       this.$router.push('/login')
     },
     // 获取所有的菜单
     getMenuList () {
       this.$api.menus().then((res) => {
         if (res.data.status === 200) {
-          this.menulist = res.data.result
-          // console.log(JSON.parse(res.data.result[2].children)[2].path)
+          this.menulist = (res.data.result || []).map(item => {
+            let children = []
+            try {
+              children = JSON.parse(item.children || '[]')
+            } catch (e) {
+              children = []
+            }
+            return { ...item, children }
+          })
         }
       })
-      // console.log(res)
     },
     // 点击切换按钮，切换展开或折叠左侧菜单
     toggleCollapse () {
@@ -106,43 +113,64 @@ export default {
     }
 
     .el-header {
-        background-color: #373d41;
+        background: linear-gradient(90deg, #1e3a8a, #3b82f6);
         display: flex;
         justify-content: space-between;
-        padding-left: 0;
+        padding-left: 20px;
         align-items: center;
         color: #fff;
-        font-size: 20px;
+        font-size: 19px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 
         >div {
             display: flex;
             align-items: center;
 
             img {
-                width: 15%;
-                height: 50%;
-                background-color: #373d41;
-                margin-top: 15px;
-                margin-left: -15px;
-
+                width: 34px;
+                height: 34px;
+                border-radius: 50%;
+                margin-right: 10px;
+                background: #fff;
             }
 
             span {
-                margin-left: 1px;
+                font-weight: 600;
+                letter-spacing: 1px;
             }
         }
     }
 
     .el-aside {
-        background-color: #333744;
+        background-color: #1f2d3d;
 
         .el-menu {
             border-right: none;
+            background-color: transparent;
+        }
+
+        .el-submenu__title {
+            color: #c0c4cc;
+        }
+
+        .el-submenu__title:hover {
+            background-color: #2b3a4a;
+        }
+
+        .el-menu-item {
+            color: #c0c4cc;
+            background-color: transparent;
+        }
+
+        .el-menu-item:hover,
+        .el-menu-item.is-active {
+            color: #fff;
+            background-color: #3b82f6;
         }
     }
 
     .el-main {
-        background-color: #eaedf1;
+        background-color: #f0f2f5;
     }
 
     .el-icon-user-solid::before,
@@ -154,12 +182,18 @@ export default {
     }
 
     .toggle-button {
-        background-color: #4a5064;
-        font-size: 10px;
-        line-height: 24px;
-        color: #fff;
+        background-color: #2b3a4a;
+        font-size: 12px;
+        line-height: 28px;
+        color: #c0c4cc;
         text-align: center;
         letter-spacing: 0.2em;
         cursor: pointer;
+        transition: background-color 0.2s, color 0.2s;
+    }
+
+    .toggle-button:hover {
+        background-color: #3b82f6;
+        color: #fff;
     }
 </style>

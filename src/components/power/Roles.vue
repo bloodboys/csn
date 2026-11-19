@@ -11,7 +11,7 @@
             <!-- 添加角色按钮区域 -->
             <el-row>
                 <el-col>
-                    <el-button type="primary" @click="AddRoleDialogVisible=true">添加角色</el-button>
+                    <el-button type="primary" v-if="isAdmin" @click="AddRoleDialogVisible=true">添加角色</el-button>
                 </el-col>
             </el-row>
             <!-- 角色列表区域 -->
@@ -22,7 +22,7 @@
                         <el-row :class="['bdbottom',i1===0 ? 'bdtop' : '','vcenter']" v-for="(item1,i1) in JSON.parse(scope.row.children)" :key="item1.id">
                             <!-- 渲染一级权限 -->
                             <el-col :span="5">
-                               <el-tag closable @close="removeRightById(scope.row,item1.id)">{{item1.authName}}</el-tag>
+                               <el-tag :closable="isAdmin" @close="removeRightById(scope.row,item1.id)">{{item1.authName}}</el-tag>
                                <i class="el-icon-caret-right"></i>
                             </el-col>
                             <!-- 渲染二级和三级权限 -->
@@ -30,12 +30,12 @@
                                 <!-- 通过for循环嵌套渲染二级权限 -->
                                 <el-row :class="[i2===0?'':'bdtop','vcenter']" v-for="(item2,i2) in item1.children" :key="item2.id">
                                     <el-col :span="6">
-                                        <el-tag type="success" closable @close="removeRightById(scope.row,item2.id)">{{item2.authName}}</el-tag>
+                                        <el-tag type="success" :closable="isAdmin" @close="removeRightById(scope.row,item2.id)">{{item2.authName}}</el-tag>
                                         <i class="el-icon-caret-right"></i>
 
                                     </el-col>
                                     <el-col :span="18">
-                                        <el-tag type="warning" v-for="item3 in item2.children" :key="item3.id" closable @close="removeRightById(scope.row,item3.id)">{{item3.authName}}</el-tag>
+                                        <el-tag type="warning" v-for="item3 in item2.children" :key="item3.id" :closable="isAdmin" @close="removeRightById(scope.row,item3.id)">{{item3.authName}}</el-tag>
                                     </el-col>
                                 </el-row>
                             </el-col>
@@ -48,12 +48,14 @@
                 <el-table-column label="角色描述" prop="roleDesc"></el-table-column>
                 <el-table-column label="操作" width="300px">
                     <template v-slot="scope">
+                        <template v-if="isAdmin">
                         <el-button type="primary" icon="el-icon-edit" size="mini"  @click="showEditDialog(scope.row.id)">编辑
                         </el-button>
                         <el-button type="danger" icon="el-icon-delete" size="mini" @click="removeRoleById(scope.row.id)">删除
                         </el-button>
                         <el-button type="warning" icon="el-icon-setting" size="mini" @click="showSetRightDialog(scope.row)">分配权限
                         </el-button>
+                        </template>
                     </template>
                 </el-table-column>
             </el-table>
@@ -154,6 +156,11 @@ export default {
       defKeys: [],
       // 当前即将分配权限的角色id
       roleId: ''
+    }
+  },
+  computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
     }
   },
   created () {
@@ -273,72 +280,38 @@ export default {
         type: 'warning'
       }).then(() => {
         // 确定删除
-        // 处理角色权限
         const t = JSON.parse(role.children)
+        let newTree
+        // 权限树为两级：一级 id 3 位（如 101），二级 id 5 位（如 10101）
         if ((rightId + '').length === 3) {
-          const x = t.filter(ite => ite.id !== rightId)
-          // 删除接口
-          this.$api.deleteRightById({
-            id: role.id,
-            roles: JSON.stringify(x)
-          }).then((res) => {
-            if (res.data.status === 200) {
-              this.$message.success('权限删除成功!')
-              this.$api.returnRightById({
-                id: role.id
-              }).then((res) => {
-                if (res.data.status !== 200) {
-                  return this.$message.error('返回角色权限失败')
-                }
-                role.children = res.data.result[0].children
-              })
-            } else {
-              this.$message.error('权限删除失败!')
-            }
-          })
-        } else if ((rightId + '').length === 4) {
-          t.map(item => { const list = item.children.filter(ite => ite.id !== rightId); item.children = list })
-          // 删除接口
-          this.$api.deleteRightById({
-            id: role.id,
-            roles: JSON.stringify(t)
-          }).then((res) => {
-            if (res.data.status === 200) {
-              this.$message.success('权限删除成功!')
-              this.$api.returnRightById({
-                id: role.id
-              }).then((res) => {
-                if (res.data.status !== 200) {
-                  return this.$message.error('返回角色权限失败')
-                }
-                role.children = res.data.result[0].children
-              })
-            } else {
-              this.$message.error('权限删除失败!')
-            }
-          })
+          // 删除一级权限：直接过滤掉该一级节点
+          newTree = t.filter(ite => ite.id !== rightId)
         } else {
-          t.map(item => { item.children.map(ite => { const list = ite.children.filter(it => it.id !== rightId); ite.children = list }) })
-          // 删除接口
-          this.$api.deleteRightById({
-            id: role.id,
-            roles: JSON.stringify(t)
-          }).then((res) => {
-            if (res.data.status === 200) {
-              this.$message.success('权限删除成功!')
-              this.$api.returnRightById({
-                id: role.id
-              }).then((res) => {
-                if (res.data.status !== 200) {
-                  return this.$message.error('返回角色权限失败')
-                }
-                role.children = res.data.result[0].children
-              })
-            } else {
-              this.$message.error('权限删除失败!')
-            }
+          // 删除二级权限：从各一级节点的 children 中过滤
+          newTree = t.map(item => {
+            item.children = (item.children || []).filter(ite => ite.id !== rightId)
+            return item
           })
         }
+        // 删除接口
+        this.$api.deleteRightById({
+          id: role.id,
+          roles: JSON.stringify(newTree)
+        }).then((res) => {
+          if (res.data.status === 200) {
+            this.$message.success('权限删除成功!')
+            this.$api.returnRightById({
+              id: role.id
+            }).then((res) => {
+              if (res.data.status !== 200) {
+                return this.$message.error('返回角色权限失败')
+              }
+              role.children = res.data.result[0].children
+            })
+          } else {
+            this.$message.error('权限删除失败!')
+          }
+        })
       }).catch(() => {
         // 取消删除
         this.$message.info('已取消删除')
@@ -347,7 +320,8 @@ export default {
     // 展示分配权限的对话框
     showSetRightDialog (role) {
       this.roleId = role.id
-      // console.log(this.roleId)
+      // 先清空上次的默认勾选，避免残留
+      this.defKeys = []
       // 获取所有权限的数据
       this.$api.allRightById().then((res) => {
         if (res.data.status !== 200) {
@@ -357,17 +331,27 @@ export default {
         this.rightslist = JSON.parse(res.data.result[0].children)
       })
 
-      // 递归获取三级节点的id
-      this.getLeafKeys(role, this.defKeys)
+      // 递归获取该角色已分配权限的叶子节点 id（未分配过则跳过，避免误推角色 id）
+      if (role.children) {
+        this.getLeafKeys(role, this.defKeys)
+      }
       this.SetRightDialogVisible = true
     },
     // 通过递归的形式,获取角色下所有三级权限的id,并保存到defKeys数组中
     getLeafKeys (node, arr) {
       // 如果当前node节点不包含children属性,则是三级节点
-      if (!node.children) {
+      if (!node.children || !node.children.length) {
         return arr.push(node.id)
       }
-      eval(node.children).forEach(item => this.getLeafKeys(item, arr))
+      let children = node.children
+      if (typeof children === 'string') {
+        try {
+          children = JSON.parse(children)
+        } catch (e) {
+          return arr.push(node.id)
+        }
+      }
+      children.forEach(item => this.getLeafKeys(item, arr))
     },
     // 监听分配权限对话框的关闭事件
     SetRightDialogClosed () {
@@ -375,53 +359,37 @@ export default {
     },
     // 点击为角色分配权限
     allRights () {
-      const keys = [
+      // 勾选的节点 + 半选的父节点（getHalfCheckedKeys 保证父节点也被纳入）
+      const checked = new Set([
         ...this.$refs.treeRef.getCheckedKeys(),
         ...this.$refs.treeRef.getHalfCheckedKeys()
-      ]
-      // 更新权限数据
-      var x = this.rightslist
-      // 第一权限筛选
-      for (let i = 0; i < this.rightslist.length; i++) {
-        if (keys.indexOf(this.rightslist[i].id) === -1) {
-          x = x.filter(ite => ite.id !== this.rightslist[i].id)
-        }
-      }
-      // 第二权限筛选
-      for (let i = 0; i < x.length; i++) {
-        for (let j = 0; j < x[i].children.length; j++) {
-          if (keys.indexOf(x[i].children[j].id) === -1) {
-            x.map(item => { const list = item.children.filter(ite => ite.id !== x[i].children[j].id); item.children = list })
+      ])
+      // 递归筛选：仅保留已勾选的节点，构建新的权限树（不修改原始 rightslist）
+      const filterTree = (nodes) => {
+        const result = []
+        ;(nodes || []).forEach(node => {
+          if (!checked.has(node.id)) return
+          const copy = { ...node }
+          if (node.children && node.children.length) {
+            copy.children = filterTree(node.children)
           }
-        }
+          result.push(copy)
+        })
+        return result
       }
-
-      // 第三权限筛选
-      var c = []
-      for (let i = 0; i < x.length; i++) {
-        for (let j = 0; j < x[i].children.length; j++) {
-          for (let k = 0; k < x[i].children[j].children.length; k++) {
-            if (keys.indexOf(x[i].children[j].children[k].id) === -1) {
-              c.push(x[i].children[j].children[k].id)
-            }
-          }
-        }
-      }
-      for (let i = 0; i < c.length; i++) {
-        x.map(item => { item.children.map(ite => { const list = ite.children.filter(it => it.id !== c[i]); ite.children = list }) })
-      }
+      const newTree = filterTree(this.rightslist)
       // 分配权限接口
       this.$api.deleteRightById({
         id: this.roleId,
-        roles: JSON.stringify(x)
+        roles: JSON.stringify(newTree)
       }).then((res) => {
         if (res.data.status === 200) {
           this.$message.success('权限分配成功!')
+          this.getRolesList()
         } else {
           this.$message.error('权限分配失败!')
         }
       })
-      this.getRolesList()
       this.SetRightDialogVisible = false
     }
   }

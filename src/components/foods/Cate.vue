@@ -11,7 +11,7 @@
         <el-card>
             <el-row>
                 <el-col>
-                    <el-button type="primary" @click="showAddCateDialog">添加分类</el-button>
+                    <el-button type="primary" v-if="isAdmin" @click="showAddCateDialog">添加分类</el-button>
                 </el-col>
             </el-row>
 
@@ -31,8 +31,10 @@
                 </template>
                 <!-- 操作 -->
                 <template slot="opt" slot-scope="scope">
+                    <template v-if="isAdmin">
                     <el-button type="primary" icon="el-icon-edit" size="mini" @click="showEditCateDialog(scope.row)">编辑</el-button>
                     <el-button type="danger" icon="el-icon-delete" size="mini" @click="removeCate(scope.row)">删除</el-button>
+                    </template>
                 </template>
             </tree-table>
 
@@ -163,6 +165,11 @@ export default {
       editCateForm: {}
     }
   },
+  computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
+    }
+  },
   created () {
     this.getCateList()
   },
@@ -171,8 +178,10 @@ export default {
     getCateList () {
       // 把数据列表赋值给catelist
       this.$api.foodscate().then((res) => {
-        if (res.data.status === 200) {
+        if (res.data.status === 200 && res.data.result && res.data.result[0]) {
           this.catelist = JSON.parse(res.data.result[0].children)
+        } else {
+          this.catelist = []
         }
       })
     },
@@ -196,9 +205,14 @@ export default {
     // 获取父级分类的数据列表
     async getParentCateList () {
       await this.$api.foodscate().then((res) => {
-        if (res.data.status === 200) {
+        if (res.data.status === 200 && res.data.result && res.data.result[0]) {
           this.parentCateList = JSON.parse(res.data.result[0].children)
-          this.parentCateList.map(item => { item.children.map(ite => { const list = delete ite.children; ite = list }) })
+          // 移除三级分类，只保留两级供选择父级
+          this.parentCateList.forEach(item => {
+            item.children.forEach(ite => { delete ite.children })
+          })
+        } else {
+          this.parentCateList = []
         }
       }).catch(error => {
         console.log(error)
@@ -221,47 +235,46 @@ export default {
       }
     },
     // 点击按钮，添加分类
-    async addCate () {
-      var adf = this.addCateForm
-      var cat = this.catelist
-      if (this.selectedKeys.length > 0) {
-        // 在已有的一级分类下添加二级分类
-        if (this.selectedKeys.length === 1) {
-          // 添加二级分类处理逻辑
-          if (cat[this.selectedKeys[0] - 1].children === undefined) {
-            adf.cat_id = 1
-            adf.cat_deleted = false
-            adf.cat_ppid = this.selectedKeys
-            cat[this.selectedKeys[0] - 1].children = [adf]
-          } else {
-            adf.cat_id = cat[this.selectedKeys[0] - 1].children.length + 1
-            adf.cat_deleted = false
-            adf.cat_ppid = this.selectedKeys
-            cat[this.selectedKeys[0] - 1].children.push(adf)
-          }
-        } else {
-        // 在已有的二级分类下添加三级分类的处理逻辑
-          if (cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children === undefined) {
-            adf.cat_id = 1
-            adf.cat_deleted = false
-            adf.cat_ppid = this.selectedKeys
-            cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children = [adf]
-          } else {
-            adf.cat_id = cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children.length + 1
-            adf.cat_deleted = false
-            adf.cat_ppid = this.selectedKeys
-            cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children.push(adf)
-          }
-        }
-      } else {
-        adf.cat_id = cat.length + 1
-        adf.cat_deleted = false
-        cat.push(adf)
-      }
-
+    addCate () {
       this.$refs.addCateFormRef.validate(async valid => {
         if (!valid) return Error()
-        // 可以发起添加分类的网络请求
+        // 深拷贝，避免直接修改 catelist 原始数据
+        const cat = JSON.parse(JSON.stringify(this.catelist))
+        const adf = { ...this.addCateForm }
+        if (this.selectedKeys.length > 0) {
+          // 在已有的一级分类下添加二级分类
+          if (this.selectedKeys.length === 1) {
+            if (cat[this.selectedKeys[0] - 1].children === undefined) {
+              adf.cat_id = 1
+              adf.cat_deleted = false
+              adf.cat_ppid = this.selectedKeys
+              cat[this.selectedKeys[0] - 1].children = [adf]
+            } else {
+              adf.cat_id = cat[this.selectedKeys[0] - 1].children.length + 1
+              adf.cat_deleted = false
+              adf.cat_ppid = this.selectedKeys
+              cat[this.selectedKeys[0] - 1].children.push(adf)
+            }
+          } else {
+            // 在已有的二级分类下添加三级分类
+            if (cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children === undefined) {
+              adf.cat_id = 1
+              adf.cat_deleted = false
+              adf.cat_ppid = this.selectedKeys
+              cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children = [adf]
+            } else {
+              adf.cat_id = cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children.length + 1
+              adf.cat_deleted = false
+              adf.cat_ppid = this.selectedKeys
+              cat[this.selectedKeys[0] - 1].children[this.selectedKeys[1] - 1].children.push(adf)
+            }
+          }
+        } else {
+          adf.cat_id = cat.length + 1
+          adf.cat_deleted = false
+          cat.push(adf)
+        }
+        // 发起添加分类的网络请求
         await this.$api.addfoodscate({
           children: JSON.stringify(cat)
         }).then((res) => {
@@ -286,34 +299,42 @@ export default {
       this.addCateForm.cat_pid = 0
     },
     // 删除分类
-    async removeCate (cate) {
-      var catl = this.catelist
-      if (cate.cat_level === 0) {
-        catl = catl.filter(ite => ite.cat_id !== cate.cat_id)
-      } else if (cate.cat_level === 1) {
-        catl.map(item => { const list = item.children.filter(ite => ite.cat_name !== cate.cat_name); item.children = list })
-      } else {
-        catl.map(item => { item.children.map(ite => { const list = ite.children.filter(it => it.cat_name !== cate.cat_name); ite.children = list }) })
-      }
-      await this.$confirm('此操作将永久删除该菜品分类, 是否继续?', '提示', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }).then(() => {
-        // 确定删除
-        this.$api.deleteCateById({
-          children: JSON.stringify(catl)
-        }).then((res) => {
-          if (res.data.status === 200) {
-            this.$message.success('菜品分类删除成功!')
-            this.getCateList()
+    removeCate (cate) {
+      // 构造完整分类路径（如 "1" / "1,1" / "1,1,1"）
+      const catPath = (cate.cat_ppid || []).concat([cate.cat_id]).join(',')
+      // 删除前检查该分类下是否有菜品
+      this.$api.foodcountbycate({ cat_id: catPath }).then((res) => {
+        if (res.data.status === 200 && res.data.count > 0) {
+          return this.$message.error('该分类下存在菜品，无法删除')
+        }
+        this.$confirm('此操作将永久删除该菜品分类, 是否继续?', '提示', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(() => {
+          // 深拷贝，避免直接修改原始数据
+          let catl = JSON.parse(JSON.stringify(this.catelist))
+          if (cate.cat_level === 0) {
+            catl = catl.filter(ite => ite.cat_id !== cate.cat_id)
+          } else if (cate.cat_level === 1) {
+            catl.forEach(item => { item.children = item.children.filter(ite => ite.cat_name !== cate.cat_name) })
           } else {
-            this.$message.error('菜品分类删除失败!')
+            catl.forEach(item => { item.children.forEach(ite => { ite.children = ite.children.filter(it => it.cat_name !== cate.cat_name) }) })
           }
+          this.$api.deleteCateById({
+            children: JSON.stringify(catl)
+          }).then((res) => {
+            if (res.data.status === 200) {
+              this.$message.success('菜品分类删除成功!')
+              this.getCateList()
+            } else {
+              this.$message.error('菜品分类删除失败!')
+            }
+          })
+        }).catch(() => {
+          // 取消删除
+          this.$message.info('已取消删除')
         })
-      }).catch(() => {
-        // 取消删除
-        this.$message.info('已取消删除')
       })
     },
     // 显示编辑对话框
@@ -338,7 +359,8 @@ export default {
     editCate () {
       this.$refs.editCateFormRef.validate(async valid => {
         if (!valid) return Error()
-        var catl = this.catelist
+        // 深拷贝，避免失败时污染原始数据
+        const catl = JSON.parse(JSON.stringify(this.catelist))
         if (this.editCateForm.cat_ppid === undefined) { catl[this.editCateForm.cat_id - 1].cat_name = this.editCateForm.cat_name } else if (this.editCateForm.cat_ppid.length === 1) {
           catl[this.editCateForm.cat_ppid[0] - 1].children[this.editCateForm.cat_id - 1].cat_name = this.editCateForm.cat_name
         } else {

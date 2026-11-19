@@ -12,18 +12,18 @@
             <!-- 搜索与添加区域 -->
             <el-row :gutter="20">
                 <el-col :span="8">
-                    <el-input placeholder="请输入内容" v-model="queryInfo.query" clearable @clear="getUserList">
+                    <el-input placeholder="请输入用户名/邮箱/手机号" v-model="queryInfo.query" clearable @clear="getUserList">
                         <el-button slot="append" icon="el-icon-search" @click="onSubmitSearch"></el-button>
                     </el-input>
                 </el-col>
                 <el-col :span="4">
-                    <el-button type="primary" @click="addDialogVisible=true">添加用户</el-button>
+                    <el-button type="primary" v-if="isAdmin" @click="addDialogVisible=true">添加用户</el-button>
                 </el-col>
             </el-row>
 
             <!-- 用户列表区域 -->
             <el-table
-                :data="userList.slice((queryInfo.pagenum-1)*queryInfo.pagesize,queryInfo.pagenum*queryInfo.pagesize)"
+                :data="userList"
                 border stripe>
                 <el-table-column type="index"></el-table-column>
                 <el-table-column label="姓名" prop="username"></el-table-column>
@@ -32,7 +32,7 @@
                 <el-table-column label="角色" prop="role_name"></el-table-column>
                 <el-table-column label="状态">
                     <template v-slot="scope">
-                        <el-switch v-model="scope.row.mg_state" active-value="1" inactive-value="0"
+                        <el-switch v-model="scope.row.mg_state" :active-value="1" :inactive-value="0" :disabled="!isAdmin"
                             @change="userStateChanged(scope.row)"></el-switch>
 
                     </template>
@@ -40,6 +40,7 @@
                 </el-table-column>
                 <el-table-column label="操作" width="180px">
                     <template v-slot="scope">
+                        <template v-if="isAdmin">
                         <!-- 修改按钮 -->
                         <el-button type="primary" icon="el-icon-edit" size="mini" @click="showEditDialog(scope.row.id)">
                         </el-button>
@@ -50,14 +51,15 @@
                         <el-tooltip effect="dark" content="分配角色" placement="top" :enterable="false">
                             <el-button type="warning" icon="el-icon-setting" size="mini" @click="setRole(scope.row)"></el-button>
                         </el-tooltip>
+                        </template>
                     </template>
                 </el-table-column>
             </el-table>
 
             <!-- 分页区域 -->
             <el-pagination @size-change="handleSizeChange" @current-change="handleCurrentChange"
-                :current-page="queryInfo.pagenum" :page-sizes="[1, 2, 5, 10]" :page-size="queryInfo.pagesize"
-                layout="total, sizes, prev, pager, next, jumper" :total="userList.length">
+                :current-page="queryInfo.pagenum" :page-sizes="[5, 10, 20, 50]" :page-size="queryInfo.pagesize"
+                layout="total, sizes, prev, pager, next, jumper" :total="total">
             </el-pagination>
 
         </el-card>
@@ -151,7 +153,7 @@ export default {
         // 当前的页数
         pagenum: 1,
         // 当前每页显示多少数据
-        pagesize: 2
+        pagesize: 10
       },
       userList: [],
       total: 0,
@@ -250,31 +252,53 @@ export default {
       selectedRoleId: ''
     }
   },
+  computed: {
+    isAdmin () {
+      return this.$store.getters['login/isAdmin']
+    }
+  },
   created () {
     this.getUserList()
-  },
-  mounted () {
-    this.onSubmitSearch()
   },
   methods: {
     // 用户列表获取
     getUserList () {
-      this.$api.users().then((res) => {
+      this.$api.users({
+        pagenum: this.queryInfo.pagenum,
+        pagesize: this.queryInfo.pagesize
+      }).then((res) => {
         if (res.data.status === 200) {
-          this.userList = res.data.result
-          this.value = res.data.result[0].mg_state
+          this.userList = res.data.result || []
+          this.total = res.data.total || 0
         }
       })
+    },
+    // 统一数据加载：有搜索词走搜索，否则走列表（翻页时保留搜索条件）
+    getDataList () {
+      if (this.queryInfo.query) {
+        this.$api.usersearch({
+          search: this.queryInfo.query,
+          pagenum: this.queryInfo.pagenum,
+          pagesize: this.queryInfo.pagesize
+        }).then((res) => {
+          if (res.data.status === 200) {
+            this.userList = res.data.result || []
+            this.total = res.data.total || 0
+          }
+        })
+      } else {
+        this.getUserList()
+      }
     },
     // 监听pagesize改变的事件
     handleSizeChange (newSize) {
       this.queryInfo.pagesize = newSize
-      this.getUserList()
+      this.getDataList()
     },
     // 监听页码值改变的事件
     handleCurrentChange (newSize) {
       this.queryInfo.pagenum = newSize
-      this.getUserList()
+      this.getDataList()
     },
     // 监听switch开关状态的改变
     userStateChanged (userinfo) {
@@ -304,7 +328,6 @@ export default {
         if (!valid) return Error()
         // 可以发起添加用户的网络请求
         await this.$api.adduser({
-          id: this.userList[this.userList.length - 1].id + 1,
           rid: 3,
           username: this.addForm.username,
           password: this.addForm.password,
@@ -326,19 +349,8 @@ export default {
     },
     // 用户信息查询
     onSubmitSearch () {
-      this.$api
-        .usersearch({
-          search: this.queryInfo.query
-        })
-        .then((res) => {
-          if (res.data.status === 200) {
-            this.queryInfo.pagenum = 1
-            this.userList = res.data.result
-          }
-        })
-        .catch((error) => {
-          console.log(error)
-        })
+      this.queryInfo.pagenum = 1
+      this.getDataList()
     },
     // 展示编辑用户的对话框
     showEditDialog (id) {

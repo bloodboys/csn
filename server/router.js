@@ -2,35 +2,179 @@ const express = require('express')
 const router = express.Router()
 const sqlClient = require('./config')
 const jwt = require('jsonwebtoken')
-// const url = require('url')
 const fs = require('fs')
 const multer = require('multer')
+const bcrypt = require('bcryptjs')
+const Joi = require('joi')
+const JWT_SECRET = process.env.JWT_SECRET || 'csn-dev-secret-change-me'
+const logger = require('./logger')
+
+// 分页查询辅助：执行列表查询 + 总数查询，返回 { status, result, total }
+const paginate = (req, res, listSql, listArgs, countSql, countArgs) => {
+  const a = new URL(req.url, 'http://localhost:3000')
+  const pagenum = parseInt(a.searchParams.get('pagenum')) || 1
+  const pagesize = parseInt(a.searchParams.get('pagesize')) || 10
+  const offset = (pagenum - 1) * pagesize
+  sqlClient(listSql + ' limit ?,?', (listArgs || []).concat([offset, pagesize]), result => {
+    sqlClient(countSql, countArgs || null, countRes => {
+      res.send({ status: 200, result, total: (countRes && countRes[0]) ? countRes[0].total : 0 })
+    })
+  })
+}
+
+// 权限树辅助：读取 allrights 树（id=1）
+const getRightTree = () => new Promise((resolve) => {
+  sqlClient('select children from allrights where id=1', null, result => {
+    let tree = []
+    if (result && result[0] && result[0].children) {
+      try {
+        tree = JSON.parse(result[0].children)
+      } catch (e) {
+        tree = []
+      }
+    }
+    resolve(tree)
+  })
+})
+
+// 权限树辅助：写回 allrights 树
+const saveRightTree = (tree) => new Promise((resolve) => {
+  sqlClient('update allrights set children=? where id=1', [JSON.stringify(tree)], result => {
+    resolve(result && result.affectedRows > 0)
+  })
+})
+
+// 写操作接口（仅管理员，普通用户访问返回 403）
+const WRITE_PATHS = [
+  '/users/uId/state/type', '/adduser', '/updateUser', '/deleteUserById',
+  '/deleteRightById', '/addrole', '/updateUserRole', '/deleteRoleById',
+  '/addright', '/updateright', '/deleteright',
+  '/addfoodscate', '/updateCate', '/deleteCateById',
+  '/addcateparams', '/updateParams', '/deleteParamsById',
+  '/addfood', '/updatefood', '/deleteFoodById',
+  '/updateOrderAddress',
+  '/upload'
+]
+
+// 接口路径 -> 权限模块（一级权限的 path），普通用户访问读接口需拥有对应模块权限
+const API_MODULE = {
+  // 用户管理
+  '/users': 'users', '/usersearch': 'users', '/preUpdateUser': 'users',
+  '/adduser': 'users', '/updateUser': 'users', '/deleteUserById': 'users', '/users/uId/state/type': 'users',
+  // 权限管理
+  '/rights': 'rights', '/rightstree': 'rights', '/addright': 'rights', '/updateright': 'rights', '/deleteright': 'rights',
+  '/roles': 'rights', '/addrole': 'rights', '/updateUserRole': 'rights', '/deleteRoleById': 'rights',
+  '/deleteRightById': 'rights', '/returnRightById': 'rights', '/allRightById': 'rights', '/UserRoleById': 'rights', '/preUpdateUserRole': 'rights',
+  // 菜品管理
+  '/foodscate': 'foods', '/addfoodscate': 'foods', '/updateCate': 'foods', '/deleteCateById': 'foods', '/preUpdateCate': 'foods',
+  '/foodcountbycate': 'foods',
+  '/cateparams': 'foods', '/addcateparams': 'foods', '/updateParams': 'foods', '/deleteParamsById': 'foods', '/preUpdateParams': 'foods',
+  '/foods': 'foods', '/foodsearch': 'foods', '/addfood': 'foods', '/updatefood': 'foods', '/deleteFoodById': 'foods', '/preUpdatefood': 'foods',
+  '/upload': 'foods',
+  // 订单管理
+  '/order': 'orders', '/ordersearch': 'orders', '/updateOrderAddress': 'orders',
+  // 数据统计
+  '/report': 'report', '/statistics': 'report'
+}
+
+// body 参数校验中间件工厂
+const validateBody = (schema) => (req, res, next) => {
+  const { error } = schema.validate(req.body)
+  if (error) {
+    return res.status(400).send({ status: 400, msg: '参数错误：' + error.details[0].message })
+  }
+  next()
+}
+
+// 数字字段：兼容前端 JSON body 里的 number 或数字字符串
+const num = () => Joi.alternatives().try(
+  Joi.number(),
+  Joi.string().pattern(/^\d+(\.\d+)?$/)
+)
+
+// token 鉴权中间件（登录接口除外）
+router.use((req, res, next) => {
+  if (req.path === '/login') return next()
+  const token = req.headers.authorization
+  if (!token) {
+    return res.status(401).send({ status: 401, msg: '未登录' })
+  }
+  try {
+    req.user = jwt.verify(token, JWT_SECRET)
+    next()
+  } catch (e) {
+    return res.status(401).send({ status: 401, msg: 'token 无效' })
+  }
+})
+
+// 角色权限中间件：写接口仅管理员；读接口按权限模块控制
+router.use((req, res, next) => {
+  if (req.path === '/login' || req.path === '/menus') return next()
+  // 管理员拥有全部权限
+  if (req.user.rid === 1) return next()
+  // 写接口：普通用户一律拒绝
+  if (WRITE_PATHS.indexOf(req.path) !== -1) {
+    return res.status(403).send({ status: 403, msg: '无权限，仅管理员可操作' })
+  }
+  // 读接口：检查是否拥有对应模块权限
+  const module = API_MODULE[req.path]
+  if (!module) return next()
+  const rights = (req.user.rights || []).map(r => r.path)
+  if (rights.indexOf(module) !== -1) {
+    return next()
+  }
+  return res.status(403).send({ status: 403, msg: '无权限访问该模块' })
+})
 
 // 登录
-router.post('/login', (req, res) => {
+router.post('/login', validateBody(Joi.object({
+  username: Joi.string().min(3).max(10).required(),
+  password: Joi.string().min(6).max(15).required()
+})), (req, res) => {
   const {
     username,
     password
   } = req.body
-  const sql = 'select * from user where username=? and password=?'
-  const arr = [username, password]
+  const sql = 'select id, username, password, rid from user where username=?'
+  const arr = [username]
   sqlClient(sql, arr, result => {
-    if (result.length > 0) {
+    if (result.length === 0) {
+      return res.send({ status: 401, msg: '登录失败' })
+    }
+    const user = result[0]
+    const stored = user.password || ''
+    // 兼容 bcrypt 哈希（$2a/$2b 开头）与历史明文密码
+    const valid = stored.indexOf('$2') === 0
+      ? bcrypt.compareSync(password, stored)
+      : stored === password
+    if (!valid) {
+      return res.send({ status: 401, msg: '登录失败' })
+    }
+    // 查询该角色的权限树，把一级权限（id + path）放进 token 与返回
+    sqlClient('select children from roles where id=?', [user.rid], roleResult => {
+      let rights = []
+      if (roleResult[0] && roleResult[0].children) {
+        try {
+          const children = JSON.parse(roleResult[0].children)
+          rights = children.map(n => ({ id: n.id, path: n.path }))
+        } catch (e) {
+          rights = []
+        }
+      }
       const token = jwt.sign({
         username,
-        id: result[0].id
-      }, 'soomekeys')
+        id: user.id,
+        rid: user.rid,
+        rights
+      }, JWT_SECRET)
       res.send({
         status: 200,
         token,
-        username
+        username,
+        rid: user.rid,
+        rights
       })
-    } else {
-      res.send({
-        status: 401,
-        msg: '登录失败'
-      })
-    }
+    })
   })
 })
 
@@ -38,67 +182,43 @@ router.post('/login', (req, res) => {
 
 router.get('/usersearch', (req, res) => {
   const a = new URL(req.url, 'http://localhost:3000')
-  const search = a.searchParams.get('search')
-  const sql = "select * from user where concat(`username`,`mobile`,`email`,`mg_state`,`role_name`) like '%" + search + "%'"
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '暂无数据'
-      })
-    }
-  })
+  const like = '%' + (a.searchParams.get('search') || '') + '%'
+  paginate(req, res,
+    'select id,rid,username,mobile,email,mg_state,role_name from user where concat(`username`,`mobile`,`email`,`mg_state`,`role_name`) like ?',
+    [like],
+    'select count(*) as total from user where concat(`username`,`mobile`,`email`,`mg_state`,`role_name`) like ?',
+    [like]
+  )
 })
 
-// 左侧菜单权限
+// 左侧菜单权限（按用户权限过滤）
 router.get('/menus', (req, res) => {
   const sql = 'select * from menus where id'
   sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-
-      })
-    } else {
-      res.send({
-        status: 401,
-        msg: '获取菜单失败'
-
-      })
+    let menus = result || []
+    // 管理员看全部；普通用户按权限树过滤
+    if (req.user.rid !== 1) {
+      const ids = (req.user.rights || []).map(r => r.id)
+      menus = menus.filter(m => ids.indexOf(m.id) !== -1)
     }
+    res.send({ status: 200, result: menus })
   })
 })
 
 // 用户列表
 router.get('/users', (req, res) => {
-  const sql = 'select * from user where id '
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-      })
-    } else {
-      res.send({
-        status: 401,
-        msg: '获取用户列表失败'
-      })
-    }
-  })
+  paginate(req, res,
+    'select id,rid,username,mobile,email,mg_state,role_name from user',
+    [],
+    'select count(*) as total from user',
+    null
+  )
 })
 
 // 用户状态修改
-router.get('/users/uId/state/type', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const mgstate = a.searchParams.get('mg_state')
+router.put('/users/uId/state/type', (req, res) => {
+  const id = req.body.id
+  const mgstate = req.body.mg_state
   const sql = 'update user set mg_state=? where id=?'
   const arr = [mgstate, id]
 
@@ -119,28 +239,33 @@ router.get('/users/uId/state/type', (req, res) => {
 })
 
 // 添加用户
-router.get('/adduser', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const rid = a.searchParams.get('rid')
-  const username = a.searchParams.get('username')
-  const password = a.searchParams.get('password')
-  const mobile = a.searchParams.get('mobile')
-  const email = a.searchParams.get('email')
-  const sql = 'insert into user values (?,?,?,?,?,?,0,"普通用户")'
-  const arr = [id, rid, username, password, mobile, email]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '添加用户成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '添加用户失败'
-      })
+router.post('/adduser', validateBody(Joi.object({
+  rid: num().required(),
+  username: Joi.string().min(3).max(10).required(),
+  password: Joi.string().min(6).max(15).required(),
+  mobile: Joi.string().pattern(/^1[0-9]{10}$/).required(),
+  email: Joi.string().email().required()
+})), (req, res) => {
+  const rid = req.body.rid
+  const username = req.body.username
+  const password = req.body.password
+  const mobile = req.body.mobile
+  const email = req.body.email
+  // 检查用户名是否已存在
+  sqlClient('select id from user where username=?', [username], exists => {
+    if (exists.length > 0) {
+      return res.send({ status: 400, msg: '用户名已存在' })
     }
+    const hash = bcrypt.hashSync(password || '', 10)
+    const sql = 'insert into user values (null,?,?,?,?,?,0,"普通用户")'
+    const arr = [rid, username, hash, mobile, email]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({ status: 200, msg: '添加用户成功' })
+      } else {
+        res.send({ status: 500, msg: '添加用户失败' })
+      }
+    })
   })
 })
 
@@ -148,7 +273,7 @@ router.get('/adduser', (req, res) => {
 router.get('/preUpdateUser', (req, res) => {
   const a = new URL(req.url, 'http://localhost:3000')
   const id = a.searchParams.get('id')
-  const sql = 'select * from user where id=?'
+  const sql = 'select id,rid,username,mobile,email,mg_state,role_name from user where id=?'
   sqlClient(sql, [id], result => {
     if (result.length > 0) {
       res.send({
@@ -165,13 +290,18 @@ router.get('/preUpdateUser', (req, res) => {
 })
 
 // 用户编辑
-router.get('/updateUser', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const rid = a.searchParams.get('rid')
-  const email = a.searchParams.get('email')
-  const mobile = a.searchParams.get('mobile')
-  const rolename = a.searchParams.get('rolename')
+router.put('/updateUser', validateBody(Joi.object({
+  id: num().required(),
+  rid: num().required(),
+  email: Joi.string().email().required(),
+  mobile: Joi.string().pattern(/^1[0-9]{10}$/).required(),
+  rolename: Joi.string().required()
+})), (req, res) => {
+  const id = req.body.id
+  const rid = req.body.rid
+  const email = req.body.email
+  const mobile = req.body.mobile
+  const rolename = req.body.rolename
   const sql = 'update user set rid=?,email=?,mobile=?,role_name=? where id=?'
   const arr = [rid, email, mobile, rolename, id]
   sqlClient(sql, arr, result => {
@@ -190,9 +320,10 @@ router.get('/updateUser', (req, res) => {
 })
 
 // 用户删除
-router.get('/deleteUserById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
+router.delete('/deleteUserById', validateBody(Joi.object({
+  id: num().required()
+})), (req, res) => {
+  const id = req.body.id
   const sql = 'delete from user where id=?'
   const arr = [id]
   sqlClient(sql, arr, result => {
@@ -210,7 +341,7 @@ router.get('/deleteUserById', (req, res) => {
   })
 })
 
-// 权限列表
+// 权限列表（扁平，兼容旧数据）
 router.get('/rights', (req, res) => {
   const sql = 'select * from rights where id '
   sqlClient(sql, null, result => {
@@ -225,6 +356,107 @@ router.get('/rights', (req, res) => {
         msg: '获取权限列表失败'
       })
     }
+  })
+})
+
+// 权限树列表（分配权限与权限列表页共用的完整树）
+router.get('/rightstree', (req, res) => {
+  getRightTree().then(tree => {
+    res.send({ status: 200, result: tree })
+  })
+})
+
+// 添加权限（pid 为 0 或省略表示一级，否则为二级）
+router.post('/addright', validateBody(Joi.object({
+  authName: Joi.string().required(),
+  path: Joi.string().required(),
+  pid: num().optional()
+})), (req, res) => {
+  const authName = req.body.authName
+  const path = req.body.path
+  const pid = req.body.pid ? Number(req.body.pid) : 0
+  getRightTree().then(tree => {
+    if (pid === 0) {
+      // 一级权限：id = max(一级 id) + 1
+      const maxId = tree.reduce((m, n) => Math.max(m, n.id), 100)
+      tree.push({ id: maxId + 1, authName, path, children: [] })
+    } else {
+      // 二级权限：挂到对应一级节点下
+      const parent = tree.find(n => n.id === pid)
+      if (!parent) {
+        return res.send({ status: 400, msg: '父级权限不存在' })
+      }
+      parent.children = parent.children || []
+      const maxChild = parent.children.reduce((m, n) => Math.max(m, n.id), pid * 100)
+      parent.children.push({ id: maxChild + 1, authName, path })
+    }
+    saveRightTree(tree).then(ok => {
+      res.send(ok ? { status: 200, msg: '添加权限成功' } : { status: 500, msg: '添加权限失败' })
+    })
+  })
+})
+
+// 编辑权限（名称/路径）
+router.put('/updateright', validateBody(Joi.object({
+  id: num().required(),
+  authName: Joi.string().required(),
+  path: Joi.string().required()
+})), (req, res) => {
+  const id = Number(req.body.id)
+  const authName = req.body.authName
+  const path = req.body.path
+  getRightTree().then(tree => {
+    let found = false
+    const walk = (nodes) => {
+      (nodes || []).forEach(n => {
+        if (n.id === id) {
+          n.authName = authName
+          n.path = path
+          found = true
+        }
+        if (n.children && n.children.length) walk(n.children)
+      })
+    }
+    walk(tree)
+    if (!found) {
+      return res.send({ status: 400, msg: '权限不存在' })
+    }
+    saveRightTree(tree).then(ok => {
+      res.send(ok ? { status: 200, msg: '编辑权限成功' } : { status: 500, msg: '编辑权限失败' })
+    })
+  })
+})
+
+// 删除权限（删除前检查是否被角色引用）
+router.delete('/deleteright', validateBody(Joi.object({
+  id: num().required()
+})), (req, res) => {
+  const id = Number(req.body.id)
+  getRightTree().then(tree => {
+    // 检查该权限是否已被某角色分配
+    sqlClient('select children from roles where children is not null', null, roles => {
+      const referenced = (roles || []).some(r => {
+        try {
+          const c = JSON.parse(r.children)
+          const find = (nodes) => (nodes || []).some(n => n.id === id || find(n.children))
+          return find(c)
+        } catch (e) {
+          return false
+        }
+      })
+      if (referenced) {
+        return res.send({ status: 400, msg: '该权限已被角色引用，无法删除' })
+      }
+      const remove = (nodes) => (nodes || []).filter(n => {
+        if (n.id === id) return false
+        if (n.children) n.children = remove(n.children)
+        return true
+      })
+      const newTree = remove(tree)
+      saveRightTree(newTree).then(ok => {
+        res.send(ok ? { status: 200, msg: '删除权限成功' } : { status: 500, msg: '删除权限失败' })
+      })
+    })
   })
 })
 
@@ -246,11 +478,10 @@ router.get('/roles', (req, res) => {
   })
 })
 
-// 角色权限删除
-router.get('/deleteRightById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const role = a.searchParams.get('roles')
+// 角色权限更新（删除/分配权限均更新 children）
+router.put('/deleteRightById', (req, res) => {
+  const id = req.body.id
+  const role = req.body.roles
   const sql = 'update roles set children=? where id=?'
   const arr = [role, id]
   sqlClient(sql, arr, result => {
@@ -332,10 +563,12 @@ router.get('/UserRoleById', (req, res) => {
 })
 
 // 添加角色
-router.get('/addrole', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const rolename = a.searchParams.get('rolename')
-  const roledesc = a.searchParams.get('roledesc')
+router.post('/addrole', validateBody(Joi.object({
+  rolename: Joi.string().required(),
+  roledesc: Joi.string().required()
+})), (req, res) => {
+  const rolename = req.body.rolename
+  const roledesc = req.body.roledesc
   const sql = 'insert into roles values (null,?,?,null)'
   const arr = [rolename, roledesc]
   sqlClient(sql, arr, result => {
@@ -374,11 +607,10 @@ router.get('/preUpdateUserRole', (req, res) => {
 })
 
 // 角色编辑
-router.get('/updateUserRole', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const rolename = a.searchParams.get('rolename')
-  const roledesc = a.searchParams.get('roledesc')
+router.put('/updateUserRole', (req, res) => {
+  const id = req.body.id
+  const rolename = req.body.rolename
+  const roledesc = req.body.roledesc
   const sql = 'update roles set roleName=?,roleDesc=? where id=?'
   const arr = [rolename, roledesc, id]
   sqlClient(sql, arr, result => {
@@ -397,23 +629,22 @@ router.get('/updateUserRole', (req, res) => {
 })
 
 // 角色删除
-router.get('/deleteRoleById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const id = a.searchParams.get('id')
-  const sql = 'delete from roles where id=?'
-  const arr = [id]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '删除角色成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '删除角色失败'
-      })
+router.delete('/deleteRoleById', (req, res) => {
+  const id = req.body.id
+  // 检查该角色下是否存在用户
+  sqlClient('select id from user where rid=?', [id], users => {
+    if (users.length > 0) {
+      return res.send({ status: 400, msg: '该角色下存在用户，无法删除' })
     }
+    const sql = 'delete from roles where id=?'
+    const arr = [id]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({ status: 200, msg: '删除角色成功' })
+      } else {
+        res.send({ status: 500, msg: '删除角色失败' })
+      }
+    })
   })
 })
 
@@ -436,9 +667,8 @@ router.get('/foodscate', (req, res) => {
 })
 
 // 添加菜品分类
-router.get('/addfoodscate', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const children = a.searchParams.get('children')
+router.post('/addfoodscate', (req, res) => {
+  const children = req.body.children
   const sql = 'update foodscate set children=? where id=?'
   const arr = [children, 1]
   sqlClient(sql, arr, result => {
@@ -477,9 +707,8 @@ router.get('/preUpdateCate', (req, res) => {
 })
 
 // 菜品分类名修改
-router.get('/updateCate', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const children = a.searchParams.get('children')
+router.put('/updateCate', (req, res) => {
+  const children = req.body.children
   const sql = 'update foodscate set children=? where id=?'
   const arr = [children, 1]
   sqlClient(sql, arr, result => {
@@ -497,10 +726,9 @@ router.get('/updateCate', (req, res) => {
   })
 })
 
-// 菜品分类删除
-router.get('/deleteCateById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const children = a.searchParams.get('children')
+// 菜品分类删除（更新分类树）
+router.put('/deleteCateById', (req, res) => {
+  const children = req.body.children
   const sql = 'update foodscate set children=? where id=?'
   const arr = [children, 1]
   sqlClient(sql, arr, result => {
@@ -515,6 +743,18 @@ router.get('/deleteCateById', (req, res) => {
         msg: '菜品分类删除失败'
       })
     }
+  })
+})
+
+// 检查分类下是否有菜品（删除分类前校验）
+router.get('/foodcountbycate', (req, res) => {
+  const a = new URL(req.url, 'http://localhost:3000')
+  const catid = a.searchParams.get('cat_id') || ''
+  // cat_id 为逗号分隔路径，如 "1" / "1,1" / "1,1,1"；匹配自身及所有子分类
+  const sql = 'select count(*) as count from food where cat_id=? or cat_id like ?'
+  const arr = [catid, catid + ',%']
+  sqlClient(sql, arr, result => {
+    res.send({ status: 200, count: result[0] ? result[0].count : 0 })
   })
 })
 
@@ -538,11 +778,14 @@ router.get('/cateparams', (req, res) => {
 })
 
 // 添加分类参数
-router.get('/addcateparams', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const catid = a.searchParams.get('cat_id')
-  const attrname = a.searchParams.get('attr_name')
-  const attrsel = a.searchParams.get('attr_sel')
+router.post('/addcateparams', validateBody(Joi.object({
+  attr_name: Joi.string().required(),
+  cat_id: Joi.string().required(),
+  attr_sel: Joi.string().valid('many', 'only').required()
+})), (req, res) => {
+  const catid = req.body.cat_id
+  const attrname = req.body.attr_name
+  const attrsel = req.body.attr_sel
   const sql = 'insert into cateparams values (null,?,?,?,null,null)'
   const arr = [attrname, catid, attrsel]
   sqlClient(sql, arr, result => {
@@ -582,12 +825,11 @@ router.get('/preUpdateParams', (req, res) => {
 })
 
 // 分类参数修改
-router.get('/updateParams', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const attrid = a.searchParams.get('attr_id')
-  const catid = a.searchParams.get('cat_id')
-  const attrname = a.searchParams.get('attr_name')
-  const attrvals = a.searchParams.get('attr_vals')
+router.put('/updateParams', (req, res) => {
+  const attrid = req.body.attr_id
+  const catid = req.body.cat_id
+  const attrname = req.body.attr_name
+  const attrvals = req.body.attr_vals
   const sql = 'update cateparams set attr_name=?,attr_vals=? where attr_id=? and cat_id=?'
   const arr = [attrname, attrvals, attrid, catid]
   sqlClient(sql, arr, result => {
@@ -606,9 +848,8 @@ router.get('/updateParams', (req, res) => {
 })
 
 // 分类参数删除
-router.get('/deleteParamsById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const attrid = a.searchParams.get('attr_id')
+router.delete('/deleteParamsById', (req, res) => {
+  const attrid = req.body.attr_id
   const sql = 'delete from cateparams where attr_id=?'
   const arr = [attrid]
   sqlClient(sql, arr, result => {
@@ -628,47 +869,29 @@ router.get('/deleteParamsById', (req, res) => {
 
 // 菜品列表
 router.get('/foods', (req, res) => {
-  const sql = 'select * from food where foods_id '
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-      })
-    } else {
-      res.send({
-        status: 401,
-        msg: '获取菜品列表失败'
-      })
-    }
-  })
+  paginate(req, res,
+    'select * from food',
+    [],
+    'select count(*) as total from food',
+    null
+  )
 })
 
 //  菜品信息查询
 router.get('/foodsearch', (req, res) => {
   const a = new URL(req.url, 'http://localhost:3000')
-  const search = a.searchParams.get('search')
-  const sql = "select * from food where concat(`foods_name`,`foods_price`,`foods_weight`) like '%" + search + "%'"
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '暂无数据'
-      })
-    }
-  })
+  const like = '%' + (a.searchParams.get('search') || '') + '%'
+  paginate(req, res,
+    'select * from food where concat(`foods_name`,`foods_price`,`foods_weight`) like ?',
+    [like],
+    'select count(*) as total from food where concat(`foods_name`,`foods_price`,`foods_weight`) like ?',
+    [like]
+  )
 })
 
 // 菜品删除
-router.get('/deleteFoodById', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const foodsid = a.searchParams.get('foods_id')
+router.delete('/deleteFoodById', (req, res) => {
+  const foodsid = req.body.foods_id
   const sql = 'delete from food where foods_id=?'
   const arr = [foodsid]
   sqlClient(sql, arr, result => {
@@ -708,73 +931,115 @@ var createFolder = function (folder) {
 
 var uploadFolder = './upload/'
 createFolder(uploadFolder)
-var upload = multer({ storage: storage })
+var upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: function (req, file, cb) {
+    if (/^image\//.test(file.mimetype)) {
+      cb(null, true)
+    } else {
+      cb(new Error('只允许上传图片文件'))
+    }
+  }
+})
 
 router.post('/upload', upload.single('file'), function (req, res, next) {
   var file = req.file
-  console.log('文件类型：%s', file.mimetype)
-  console.log('原始文件名：%s', file.originalname)
-  console.log('文件大小：%s', file.size)
-  console.log('文件保存路径：%s', file.path)
+  if (!file) {
+    return res.json({ res_code: '1', msg: '未接收到文件' })
+  }
+  logger.info(`文件上传：${file.originalname} (${file.mimetype}, ${file.size} bytes) -> ${file.path}`)
   res.json({ res_code: '0', name: file.originalname, url: file.path })
+}, function (err, req, res, next) {
+  if (err) {
+    return res.json({ res_code: '1', msg: err.message || '上传失败' })
+  }
+  next()
 })
 
 // 添加菜品
-router.get('/addfood', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const foodsname = a.searchParams.get('foods_name')
-  const foodsprice = a.searchParams.get('foods_price')
-  const catid = a.searchParams.get('cat_id')
-  const foodsnumber = a.searchParams.get('foods_number')
-  const foodsweight = a.searchParams.get('foods_weight')
-  const foodsintroduce = a.searchParams.get('foods_introduce')
-  const addtime = a.searchParams.get('add_time')
-  const updtime = a.searchParams.get('upd_time')
-  const pics = a.searchParams.get('pics')
-  const attrs = a.searchParams.get('attrs')
-  const sql = 'insert into food values (null,?,?,?,?,?,?,null,?,?,null,0,?,?)'
-  const arr = [foodsname, foodsprice, catid, foodsnumber, foodsweight, foodsintroduce, addtime, updtime, pics, attrs]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '添加菜品成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '添加菜品失败'
-      })
+router.post('/addfood', validateBody(Joi.object({
+  foods_name: Joi.string().required(),
+  foods_price: num().required(),
+  cat_id: Joi.string().required(),
+  foods_number: num().required(),
+  foods_weight: Joi.string().required(),
+  foods_introduce: Joi.string().allow('').optional(),
+  add_time: num().optional(),
+  upd_time: num().optional(),
+  pics: Joi.string().allow('').optional(),
+  attrs: Joi.string().allow('').optional()
+})), (req, res) => {
+  const foodsname = req.body.foods_name
+  const foodsprice = req.body.foods_price
+  const catid = req.body.cat_id
+  const foodsnumber = req.body.foods_number
+  const foodsweight = req.body.foods_weight
+  const foodsintroduce = req.body.foods_introduce
+  const addtime = req.body.add_time
+  const updtime = req.body.upd_time
+  const pics = req.body.pics
+  const attrs = req.body.attrs
+  // 检查菜品名是否已存在
+  sqlClient('select foods_id from food where foods_name=?', [foodsname], exists => {
+    if (exists.length > 0) {
+      return res.send({ status: 400, msg: '菜品名称已存在' })
     }
+    const sql = 'insert into food values (null,?,?,?,?,?,?,null,?,?,null,0,?,?)'
+    const arr = [foodsname, foodsprice, catid, foodsnumber, foodsweight, foodsintroduce, addtime, updtime, pics, attrs]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({ status: 200, msg: '添加菜品成功' })
+      } else {
+        res.send({ status: 500, msg: '添加菜品失败' })
+      }
+    })
   })
 })
 
 // 菜品修改
-router.get('/updatefood', (req, res) => {
-  const a = new URL(req.url, 'http://localhost:3000')
-  const foodsid = a.searchParams.get('foods_id')
-  const foodsname = a.searchParams.get('foods_name')
-  const foodsprice = a.searchParams.get('foods_price')
-  const catid = a.searchParams.get('cat_id')
-  const foodsnumber = a.searchParams.get('foods_number')
-  const foodsintroduce = a.searchParams.get('foods_introduce')
-  const updtime = a.searchParams.get('upd_time')
-  const pics = a.searchParams.get('pics')
-  const attrs = a.searchParams.get('attrs')
-  const sql = 'update food set foods_name=?,foods_price=?,cat_id=?,foods_number=?,foods_introduce=?,upd_time=?,pics=?,attrs=? where foods_id=?'
-  const arr = [foodsname, foodsprice, catid, foodsnumber, foodsintroduce, updtime, pics, attrs, foodsid]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '修改菜品成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '修改菜品失败'
-      })
+router.put('/updatefood', validateBody(Joi.object({
+  foods_id: num().required(),
+  foods_name: Joi.string().required(),
+  foods_price: num().required(),
+  cat_id: Joi.string().required(),
+  foods_number: num().required(),
+  foods_weight: Joi.string().allow('').optional(),
+  foods_introduce: Joi.string().allow('').optional(),
+  upd_time: num().optional(),
+  pics: Joi.string().allow('').optional(),
+  attrs: Joi.string().allow('').optional()
+})), (req, res) => {
+  const foodsid = req.body.foods_id
+  const foodsname = req.body.foods_name
+  const foodsprice = req.body.foods_price
+  const catid = req.body.cat_id
+  const foodsnumber = req.body.foods_number
+  const foodsweight = req.body.foods_weight
+  const foodsintroduce = req.body.foods_introduce
+  const updtime = req.body.upd_time
+  const pics = req.body.pics
+  const attrs = req.body.attrs
+  // 检查菜品名是否与其他菜品重复（排除自身）
+  sqlClient('select foods_id from food where foods_name=? and foods_id<>?', [foodsname, foodsid], exists => {
+    if (exists.length > 0) {
+      return res.send({ status: 400, msg: '菜品名称已存在' })
     }
+    const sql = 'update food set foods_name=?,foods_price=?,cat_id=?,foods_number=?,foods_weight=?,foods_introduce=?,upd_time=?,pics=?,attrs=? where foods_id=?'
+    const arr = [foodsname, foodsprice, catid, foodsnumber, foodsweight, foodsintroduce, updtime, pics, attrs, foodsid]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({
+          status: 200,
+          msg: '修改菜品成功'
+        })
+      } else {
+        res.send({
+          status: 500,
+          msg: '修改菜品失败'
+        })
+      }
+    })
   })
 })
 
@@ -800,40 +1065,40 @@ router.get('/preUpdatefood', (req, res) => {
 
 // 订单列表
 router.get('/order', (req, res) => {
-  const sql = 'select * from orders where order_id'
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
-      })
-    } else {
-      res.send({
-        status: 401,
-        msg: '获取订单列表失败'
-      })
-    }
-  })
+  paginate(req, res,
+    'select * from orders',
+    [],
+    'select count(*) as total from orders',
+    null
+  )
 })
 
 //  订单查询
 
 router.get('/ordersearch', (req, res) => {
   const a = new URL(req.url, 'http://localhost:3000')
-  const search = a.searchParams.get('search')
-  const sql = "select * from orders where concat(`order_number`) like '%" + search + "%'"
-  sqlClient(sql, null, result => {
-    if (result.length > 0) {
-      res.send({
-        status: 200,
-        result
+  const like = '%' + (a.searchParams.get('search') || '') + '%'
+  paginate(req, res,
+    'select * from orders where order_number like ?',
+    [like],
+    'select count(*) as total from orders where order_number like ?',
+    [like]
+  )
+})
 
-      })
+// 修改订单地址
+router.put('/updateOrderAddress', validateBody(Joi.object({
+  order_id: num().required(),
+  address: Joi.string().required()
+})), (req, res) => {
+  const orderid = req.body.order_id
+  const address = req.body.address
+  const sql = 'update orders set address=? where order_id=?'
+  sqlClient(sql, [address, orderid], result => {
+    if (result.affectedRows > 0) {
+      res.send({ status: 200, msg: '修改地址成功' })
     } else {
-      res.send({
-        status: 500,
-        msg: '暂无数据'
-      })
+      res.send({ status: 500, msg: '修改地址失败' })
     }
   })
 })
@@ -855,4 +1120,67 @@ router.get('/report', (req, res) => {
     }
   })
 })
+
+// 数据统计（基于真实业务数据动态聚合）
+router.get('/statistics', (req, res) => {
+  const q = (sql, arr) => new Promise((resolve) => {
+    sqlClient(sql, arr || null, resolve)
+  })
+  // 近 7 天（含今天），对齐到本地今天 0 点往前 6 天，避免时区边界漏数据
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const sevenDaysAgo = Math.floor(todayStart.getTime() / 1000) - 6 * 86400
+
+  Promise.all([
+    q('select count(*) as total from user'),
+    q('select count(*) as total, coalesce(sum(cast(order_price as decimal(10,2))),0) as amount from orders'),
+    q('select count(*) as total from food'),
+    q('select pay_status, count(*) as c from orders group by pay_status'),
+    q('select is_send, count(*) as c from orders group by is_send'),
+    q('select coalesce(role_name,"未知") as name, count(*) as value from user group by role_name'),
+    q('select from_unixtime(create_time, "%Y-%m-%d") as d, count(*) as c, coalesce(sum(cast(order_price as decimal(10,2))),0) as amount from orders where create_time >= ? group by d order by d', [sevenDaysAgo])
+  ]).then(([users, orders, foods, payStatus, sendStatus, roleDist, trend]) => {
+    const pick = (rows, key) => {
+      const m = {}
+      rows.forEach(r => { m[r[key]] = r })
+      return m
+    }
+    const payMap = pick(payStatus, 'pay_status')
+    const sendMap = pick(sendStatus, 'is_send')
+
+    // 补全近 7 天日期，无订单的补 0，保证趋势图连续
+    const days = []
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date(Date.now() - i * 86400000)
+      const key = dt.getFullYear() + '-' +
+        String(dt.getMonth() + 1).padStart(2, '0') + '-' +
+        String(dt.getDate()).padStart(2, '0')
+      days.push(key)
+    }
+    const trendMap = {}
+    trend.forEach(r => { trendMap[r.d] = r })
+    const orderTrend = days.map(d => trendMap[d]
+      ? { date: d, count: trendMap[d].c, amount: Number(trendMap[d].amount) }
+      : { date: d, count: 0, amount: 0 })
+
+    res.send({
+      status: 200,
+      data: {
+        totalUsers: users[0] ? users[0].total : 0,
+        totalOrders: orders[0] ? orders[0].total : 0,
+        totalFoods: foods[0] ? foods[0].total : 0,
+        totalAmount: orders[0] ? Number(orders[0].amount) : 0,
+        paidOrders: payMap['1'] ? payMap['1'].c : 0,
+        unpaidOrders: payMap['0'] ? payMap['0'].c : 0,
+        sentOrders: sendMap['1'] ? sendMap['1'].c : 0,
+        unsentOrders: sendMap['0'] ? sendMap['0'].c : 0,
+        roleDist,
+        orderTrend
+      }
+    })
+  }).catch(() => {
+    res.send({ status: 500, msg: '获取统计数据失败' })
+  })
+})
+
 module.exports = router
