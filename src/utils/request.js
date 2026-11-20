@@ -85,9 +85,13 @@ instance.interceptors.response.use(
       return Promise.reject(error)
     }
     errorHandle(response.status, response.statusText)
-    // 401 未登录/token 失效时清理本地登录态
+    // 401 未登录/token 失效时清理本地登录态并跳转登录页
     if (response.status === 401) {
       localStorage.removeItem('csn')
+      store.commit('login/setUser', { username: '', token: '', rid: null, rights: [] })
+      if (window.location.hash.indexOf('/login') === -1) {
+        window.location.hash = '#/login'
+      }
     }
     // 403 无权限提示
     if (response.status === 403) {

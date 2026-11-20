@@ -1,4 +1,6 @@
 import Vue from 'vue'
+// 引入完整主题样式（含图标字体），避免按需引入漏掉 el-icon 图标字体
+import 'element-ui/lib/theme-chalk/index.css'
 import { Button, Form, FormItem, Input, Message, Container, Header, Aside, Main, Menu, Submenu, MenuItem, Breadcrumb, BreadcrumbItem, Card, Row, Col, Table, TableColumn, Switch, Tooltip, Pagination, Dialog, MessageBox, Tag, Tree, Select, Option, Cascader, Alert, Tabs, TabPane, Steps, Step, CheckboxGroup, Checkbox, RadioGroup, Radio, Upload, Timeline, TimelineItem } from 'element-ui'
 
 Vue.use(Button)

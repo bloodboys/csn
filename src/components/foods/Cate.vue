@@ -322,7 +322,8 @@ export default {
             catl.forEach(item => { item.children.forEach(ite => { ite.children = ite.children.filter(it => it.cat_name !== cate.cat_name) }) })
           }
           this.$api.deleteCateById({
-            children: JSON.stringify(catl)
+            children: JSON.stringify(catl),
+            cat_id: catPath
           }).then((res) => {
             if (res.data.status === 200) {
               this.$message.success('菜品分类删除成功!')

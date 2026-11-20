@@ -46,7 +46,10 @@ const base = {
   updatefood: '/api/updatefood', // 菜品修改
   order: '/api/order', // 订单列表
   ordersearch: '/api/ordersearch', // 订单查询
+  orderitems: '/api/orderitems', // 订单商品明细
   updateOrderAddress: '/api/updateOrderAddress', // 修改订单地址
+  updateOrderStatus: '/api/updateOrderStatus', // 修改订单支付/发货状态
+  addLogistics: '/api/addLogistics', // 追加物流轨迹
   report: '/api/report', // 数据报表
   statistics: '/api/statistics' // 数据统计（动态聚合）
 }

@@ -180,6 +180,28 @@ INSERT INTO `orders` (`order_number`,`order_price`,`pay_status`,`is_send`,`creat
 ('20261120000001','28',1,1,UNIX_TIMESTAMP(),'[{"time":"2026-11-20 10:00:00","context":"订单已提交"},{"time":"2026-11-20 10:30:00","context":"商家已接单"},{"time":"2026-11-20 11:00:00","context":"骑手配送中"},{"time":"2026-11-20 11:30:00","context":"已送达"}]');
 
 -- -------------------------------------------------------------
+-- 订单商品明细表 (订单-商品快照，foods_id 可为空表示历史快照商品)
+-- -------------------------------------------------------------
+DROP TABLE IF EXISTS `order_items`;
+CREATE TABLE `order_items` (
+  `id`          INT PRIMARY KEY AUTO_INCREMENT,
+  `order_id`    INT          NOT NULL,
+  `foods_id`    INT          DEFAULT NULL,
+  `foods_name`  VARCHAR(50)  DEFAULT NULL,
+  `foods_price` VARCHAR(20)  DEFAULT NULL,
+  `count`       INT          DEFAULT 1,
+  KEY `idx_order_id` (`order_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO `order_items` (`order_id`,`foods_id`,`foods_name`,`foods_price`,`count`) VALUES
+(7,1,'尖椒红烧肉','28',1),
+(7,NULL,'可乐','5',2),
+(8,NULL,'鸡蛋汤','15',1),
+(9,1,'尖椒红烧肉','28',2),
+(9,NULL,'米饭','2',2),
+(11,1,'尖椒红烧肉','28',1);
+
+-- -------------------------------------------------------------
 -- 数据报表表 (data 为 echarts option JSON)
 -- -------------------------------------------------------------
 DROP TABLE IF EXISTS `report`;

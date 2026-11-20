@@ -43,11 +43,12 @@
                         {{scope.row.create_time | dateFormat}}
                     </template>
                 </el-table-column>
-                <el-table-column label="操作">
+                <el-table-column label="操作" width="230px">
                     <template v-slot="scope">
-                        <el-button type="primary" icon="el-icon-edit" size="mini" v-if="isAdmin" @click="showBox(scope.row)"></el-button>
-                        <el-button type="success" icon="el-icon-location" size="mini"
-                                   @click="showProgressBox(scope.row.logistics)"></el-button>
+                        <el-button type="primary" icon="el-icon-edit" size="mini" v-if="isAdmin" @click="showBox(scope.row)" title="修改地址"></el-button>
+                        <el-button type="warning" icon="el-icon-goods" size="mini" @click="showItems(scope.row)" title="商品明细"></el-button>
+                        <el-button type="info" icon="el-icon-s-tools" size="mini" v-if="isAdmin" @click="showStatus(scope.row)" title="修改状态"></el-button>
+                        <el-button type="success" icon="el-icon-location" size="mini" @click="showProgressBox(scope.row)" title="物流进度"></el-button>
                     </template>
                 </el-table-column>
             </el-table>
@@ -83,6 +84,40 @@
             </span>
         </el-dialog>
 
+        <!-- 订单商品明细对话框-->
+        <el-dialog title="订单商品明细" :visible.sync="itemsVisible" width="50%">
+            <el-table :data="itemsList" border stripe>
+                <el-table-column type="index"></el-table-column>
+                <el-table-column label="商品名称" prop="foods_name"></el-table-column>
+                <el-table-column label="单价(元)" prop="foods_price"></el-table-column>
+                <el-table-column label="数量" prop="count"></el-table-column>
+                <el-table-column label="小计(元)">
+                    <template slot-scope="scope">
+                        {{ (Number(scope.row.foods_price) * scope.row.count).toFixed(2) }}
+                    </template>
+                </el-table-column>
+            </el-table>
+            <div v-if="!itemsList.length" style="text-align:center;color:#999;padding:20px;">该订单暂无商品明细</div>
+        </el-dialog>
+
+        <!-- 修改订单状态对话框-->
+        <el-dialog title="修改订单状态" :visible.sync="statusVisible" width="40%">
+            <el-form label-width="80px">
+                <el-form-item label="支付状态">
+                    <el-switch v-model="statusForm.pay_status" :active-value="1" :inactive-value="0"
+                               active-text="已付款" inactive-text="未付款"></el-switch>
+                </el-form-item>
+                <el-form-item label="发货状态">
+                    <el-switch v-model="statusForm.is_send" :active-value="1" :inactive-value="0"
+                               active-text="已发货" inactive-text="未发货"></el-switch>
+                </el-form-item>
+            </el-form>
+            <span slot="footer" class="dialog-footer">
+                <el-button @click="statusVisible = false">取 消</el-button>
+                <el-button type="primary" @click="saveStatus">保 存</el-button>
+            </span>
+        </el-dialog>
+
         <!-- 物流进度对话框-->
         <el-dialog
                 title="物流进度"
@@ -98,6 +133,11 @@
                     {{activity.context}}
                 </el-timeline-item>
             </el-timeline>
+            <div v-if="!progressInfo.length" style="text-align:center;color:#999;padding:10px;">暂无物流信息</div>
+            <div v-if="isAdmin" style="margin-top:15px;">
+                <el-input v-model="logisticsText" placeholder="输入物流节点，如：商家已接单" style="width:70%"></el-input>
+                <el-button type="primary" style="margin-left:10px;" @click="addLogistics">添加节点</el-button>
+            </div>
         </el-dialog>
     </div>
 </template>
@@ -133,6 +173,11 @@ export default {
       cityData: cityData,
       progressVisible: false,
       progressInfo: [],
+      logisticsText: '',
+      itemsVisible: false,
+      itemsList: [],
+      statusVisible: false,
+      statusForm: { pay_status: 0, is_send: 0 },
       currentOrder: {}
     }
   },
@@ -225,14 +270,74 @@ export default {
     addressDialogClosed () {
       this.$refs.addressFormRef.resetFields()
     },
+    // 展示订单商品明细
+    showItems (row) {
+      this.$api.orderitems({ order_id: row.order_id }).then((res) => {
+        if (res.data.status === 200) {
+          this.itemsList = res.data.result || []
+          this.itemsVisible = true
+        }
+      })
+    },
+    // 展示修改状态对话框
+    showStatus (row) {
+      this.currentOrder = row
+      this.statusForm = { pay_status: row.pay_status, is_send: row.is_send }
+      this.statusVisible = true
+    },
+    // 保存订单状态
+    saveStatus () {
+      this.$api.updateOrderStatus({
+        order_id: this.currentOrder.order_id,
+        pay_status: this.statusForm.pay_status,
+        is_send: this.statusForm.is_send
+      }).then((res) => {
+        if (res.data.status === 200) {
+          this.$message.success('订单状态已更新')
+          this.statusVisible = false
+          this.getOrderList()
+        } else {
+          this.$message.error(res.data.msg || '状态更新失败')
+        }
+      })
+    },
     // 物流进度展示
-    showProgressBox (info) {
+    showProgressBox (row) {
+      this.currentOrder = row
       try {
-        this.progressInfo = JSON.parse(info || '[]')
+        this.progressInfo = JSON.parse(row.logistics || '[]')
       } catch (e) {
         this.progressInfo = []
       }
+      this.logisticsText = ''
       this.progressVisible = true
+    },
+    // 追加物流节点
+    addLogistics () {
+      if (!this.logisticsText.trim()) {
+        return this.$message.error('请输入物流内容')
+      }
+      const context = this.logisticsText.trim()
+      this.$api.addLogistics({
+        order_id: this.currentOrder.order_id,
+        context: context
+      }).then((res) => {
+        if (res.data.status === 200) {
+          this.$message.success('物流信息已更新')
+          this.logisticsText = ''
+          // 本地追加时间线节点，并同步订单列表
+          this.progressInfo.push({ time: this.nowStr(), context: context })
+          this.getOrderList()
+        } else {
+          this.$message.error(res.data.msg || '物流更新失败')
+        }
+      })
+    },
+    nowStr () {
+      const now = new Date()
+      const pad = n => String(n).padStart(2, '0')
+      return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+        ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds())
     },
     // 订单查询
     onSubmitSearch () {

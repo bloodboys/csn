@@ -3,10 +3,21 @@ const router = express.Router()
 const sqlClient = require('./config')
 const jwt = require('jsonwebtoken')
 const fs = require('fs')
+const path = require('path')
 const multer = require('multer')
 const bcrypt = require('bcryptjs')
 const Joi = require('joi')
-const JWT_SECRET = process.env.JWT_SECRET || 'csn-dev-secret-change-me'
+const JWT_SECRET = process.env.JWT_SECRET
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET 未配置：请在 server 目录的 .env 中设置（参考 .env.example）')
+}
+// token 有效期：24 小时
+const JWT_EXPIRES_IN = '24h'
+
+// 登录防爆破：连续失败 5 次锁定 10 分钟（内存级，进程重启后自动清零）
+const loginAttempts = new Map() // username -> { count, lockedUntil }
+const MAX_LOGIN_FAIL = 5
+const LOGIN_LOCK_MS = 10 * 60 * 1000
 const logger = require('./logger')
 
 // 分页查询辅助：执行列表查询 + 总数查询，返回 { status, result, total }
@@ -52,7 +63,7 @@ const WRITE_PATHS = [
   '/addfoodscate', '/updateCate', '/deleteCateById',
   '/addcateparams', '/updateParams', '/deleteParamsById',
   '/addfood', '/updatefood', '/deleteFoodById',
-  '/updateOrderAddress',
+  '/updateOrderAddress', '/updateOrderStatus', '/addLogistics',
   '/upload'
 ]
 
@@ -72,7 +83,7 @@ const API_MODULE = {
   '/foods': 'foods', '/foodsearch': 'foods', '/addfood': 'foods', '/updatefood': 'foods', '/deleteFoodById': 'foods', '/preUpdatefood': 'foods',
   '/upload': 'foods',
   // 订单管理
-  '/order': 'orders', '/ordersearch': 'orders', '/updateOrderAddress': 'orders',
+  '/order': 'orders', '/ordersearch': 'orders', '/orderitems': 'orders', '/updateOrderAddress': 'orders', '/updateOrderStatus': 'orders', '/addLogistics': 'orders',
   // 数据统计
   '/report': 'report', '/statistics': 'report'
 }
@@ -91,6 +102,17 @@ const num = () => Joi.alternatives().try(
   Joi.number(),
   Joi.string().pattern(/^\d+(\.\d+)?$/)
 )
+
+// JSON 数组字符串字段（分类树 children 等），校验能成功解析为数组
+const jsonArray = Joi.string().custom((value, helpers) => {
+  try {
+    const arr = JSON.parse(value)
+    if (!Array.isArray(arr)) throw new Error('not array')
+    return value
+  } catch (e) {
+    return helpers.error('any.invalid')
+  }
+}, 'JSON 数组字符串')
 
 // token 鉴权中间件（登录接口除外）
 router.use((req, res, next) => {
@@ -135,11 +157,32 @@ router.post('/login', validateBody(Joi.object({
     username,
     password
   } = req.body
+
+  // 防爆破：已被锁定的账号直接拒绝
+  const rec = loginAttempts.get(username)
+  if (rec && rec.lockedUntil > Date.now()) {
+    const remain = Math.ceil((rec.lockedUntil - Date.now()) / 1000)
+    return res.status(429).send({ status: 429, msg: `登录失败次数过多，请 ${remain} 秒后重试` })
+  }
+
   const sql = 'select id, username, password, rid from user where username=?'
   const arr = [username]
   sqlClient(sql, arr, result => {
-    if (result.length === 0) {
+    // 登录失败统一处理：累计失败次数，超过阈值锁定
+    const fail = () => {
+      const r = loginAttempts.get(username) || { count: 0, lockedUntil: 0 }
+      r.count += 1
+      if (r.count >= MAX_LOGIN_FAIL) {
+        r.lockedUntil = Date.now() + LOGIN_LOCK_MS
+        r.count = 0
+        return res.status(429).send({ status: 429, msg: '登录失败次数过多，请 10 分钟后重试' })
+      }
+      loginAttempts.set(username, r)
       return res.send({ status: 401, msg: '登录失败' })
+    }
+
+    if (result.length === 0) {
+      return fail()
     }
     const user = result[0]
     const stored = user.password || ''
@@ -148,8 +191,11 @@ router.post('/login', validateBody(Joi.object({
       ? bcrypt.compareSync(password, stored)
       : stored === password
     if (!valid) {
-      return res.send({ status: 401, msg: '登录失败' })
+      return fail()
     }
+    // 登录成功，清除失败记录
+    loginAttempts.delete(username)
+
     // 查询该角色的权限树，把一级权限（id + path）放进 token 与返回
     sqlClient('select children from roles where id=?', [user.rid], roleResult => {
       let rights = []
@@ -166,7 +212,7 @@ router.post('/login', validateBody(Joi.object({
         id: user.id,
         rid: user.rid,
         rights
-      }, JWT_SECRET)
+      }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN })
       res.send({
         status: 200,
         token,
@@ -256,15 +302,21 @@ router.post('/adduser', validateBody(Joi.object({
     if (exists.length > 0) {
       return res.send({ status: 400, msg: '用户名已存在' })
     }
-    const hash = bcrypt.hashSync(password || '', 10)
-    const sql = 'insert into user values (null,?,?,?,?,?,0,"普通用户")'
-    const arr = [rid, username, hash, mobile, email]
-    sqlClient(sql, arr, result => {
-      if (result.affectedRows > 0) {
-        res.send({ status: 200, msg: '添加用户成功' })
-      } else {
-        res.send({ status: 500, msg: '添加用户失败' })
+    // 根据角色 id 查角色名，保证 role_name 与 roles 表一致
+    sqlClient('select roleName from roles where id=?', [rid], roleRes => {
+      if (!roleRes.length) {
+        return res.send({ status: 400, msg: '角色不存在' })
       }
+      const hash = bcrypt.hashSync(password || '', 10)
+      const sql = 'insert into user values (null,?,?,?,?,?,0,?)'
+      const arr = [rid, username, hash, mobile, email, roleRes[0].roleName]
+      sqlClient(sql, arr, result => {
+        if (result.affectedRows > 0) {
+          res.send({ status: 200, msg: '添加用户成功' })
+        } else {
+          res.send({ status: 500, msg: '添加用户失败' })
+        }
+      })
     })
   })
 })
@@ -294,28 +346,32 @@ router.put('/updateUser', validateBody(Joi.object({
   id: num().required(),
   rid: num().required(),
   email: Joi.string().email().required(),
-  mobile: Joi.string().pattern(/^1[0-9]{10}$/).required(),
-  rolename: Joi.string().required()
+  mobile: Joi.string().pattern(/^1[0-9]{10}$/).required()
 })), (req, res) => {
   const id = req.body.id
   const rid = req.body.rid
   const email = req.body.email
   const mobile = req.body.mobile
-  const rolename = req.body.rolename
-  const sql = 'update user set rid=?,email=?,mobile=?,role_name=? where id=?'
-  const arr = [rid, email, mobile, rolename, id]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '用户修改成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '用户修改失败'
-      })
+  // role_name 由 rid 查 roles 表同步，避免与前端传值脱节
+  sqlClient('select roleName from roles where id=?', [rid], roleRes => {
+    if (!roleRes.length) {
+      return res.send({ status: 400, msg: '角色不存在' })
     }
+    const sql = 'update user set rid=?,email=?,mobile=?,role_name=? where id=?'
+    const arr = [rid, email, mobile, roleRes[0].roleName, id]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({
+          status: 200,
+          msg: '用户修改成功'
+        })
+      } else {
+        res.send({
+          status: 500,
+          msg: '用户修改失败'
+        })
+      }
+    })
   })
 })
 
@@ -323,20 +379,35 @@ router.put('/updateUser', validateBody(Joi.object({
 router.delete('/deleteUserById', validateBody(Joi.object({
   id: num().required()
 })), (req, res) => {
-  const id = req.body.id
-  const sql = 'delete from user where id=?'
-  const arr = [id]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '删除用户成功'
+  const id = Number(req.body.id)
+  // 不能删除当前登录账号
+  if (req.user && req.user.id === id) {
+    return res.send({ status: 400, msg: '不能删除当前登录账号' })
+  }
+  sqlClient('select rid from user where id=?', [id], target => {
+    if (!target.length) {
+      return res.send({ status: 400, msg: '用户不存在' })
+    }
+    const doDelete = () => {
+      sqlClient('delete from user where id=?', [id], result => {
+        if (result.affectedRows > 0) {
+          res.send({ status: 200, msg: '删除用户成功' })
+        } else {
+          res.send({ status: 500, msg: '删除用户失败' })
+        }
+      })
+    }
+    // 不能删除最后一个管理员
+    if (target[0].rid === 1) {
+      sqlClient('select count(*) as count from user where rid=1', null, admins => {
+        const cnt = admins[0] ? admins[0].count : 0
+        if (cnt <= 1) {
+          return res.send({ status: 400, msg: '不能删除最后一个管理员' })
+        }
+        doDelete()
       })
     } else {
-      res.send({
-        status: 500,
-        msg: '删除用户失败'
-      })
+      doDelete()
     }
   })
 })
@@ -615,9 +686,9 @@ router.put('/updateUserRole', (req, res) => {
   const arr = [rolename, roledesc, id]
   sqlClient(sql, arr, result => {
     if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '角色修改成功'
+      // 同步该角色下所有用户的 role_name 冗余字段
+      sqlClient('update user set role_name=? where rid=?', [rolename, id], () => {
+        res.send({ status: 200, msg: '角色修改成功' })
       })
     } else {
       res.send({
@@ -630,7 +701,11 @@ router.put('/updateUserRole', (req, res) => {
 
 // 角色删除
 router.delete('/deleteRoleById', (req, res) => {
-  const id = req.body.id
+  const id = Number(req.body.id)
+  // 系统内置管理员角色不可删除
+  if (id === 1) {
+    return res.send({ status: 400, msg: '系统内置管理员角色不可删除' })
+  }
   // 检查该角色下是否存在用户
   sqlClient('select id from user where rid=?', [id], users => {
     if (users.length > 0) {
@@ -667,7 +742,9 @@ router.get('/foodscate', (req, res) => {
 })
 
 // 添加菜品分类
-router.post('/addfoodscate', (req, res) => {
+router.post('/addfoodscate', validateBody(Joi.object({
+  children: jsonArray.required()
+})), (req, res) => {
   const children = req.body.children
   const sql = 'update foodscate set children=? where id=?'
   const arr = [children, 1]
@@ -707,7 +784,9 @@ router.get('/preUpdateCate', (req, res) => {
 })
 
 // 菜品分类名修改
-router.put('/updateCate', (req, res) => {
+router.put('/updateCate', validateBody(Joi.object({
+  children: jsonArray.required()
+})), (req, res) => {
   const children = req.body.children
   const sql = 'update foodscate set children=? where id=?'
   const arr = [children, 1]
@@ -726,23 +805,34 @@ router.put('/updateCate', (req, res) => {
   })
 })
 
-// 菜品分类删除（更新分类树）
-router.put('/deleteCateById', (req, res) => {
+// 菜品分类删除（更新分类树；删除前校验分类下是否还有菜品）
+router.put('/deleteCateById', validateBody(Joi.object({
+  children: jsonArray.required(),
+  cat_id: Joi.string().required()
+})), (req, res) => {
   const children = req.body.children
-  const sql = 'update foodscate set children=? where id=?'
-  const arr = [children, 1]
-  sqlClient(sql, arr, result => {
-    if (result.affectedRows > 0) {
-      res.send({
-        status: 200,
-        msg: '菜品分类删除成功'
-      })
-    } else {
-      res.send({
-        status: 500,
-        msg: '菜品分类删除失败'
-      })
+  const catId = req.body.cat_id
+  // 后端兜底校验：该分类（含所有子分类）下存在菜品则禁止删除
+  sqlClient('select count(*) as count from food where cat_id=? or cat_id like ?', [catId, catId + ',%'], cntRes => {
+    const count = cntRes[0] ? cntRes[0].count : 0
+    if (count > 0) {
+      return res.send({ status: 400, msg: '该分类下存在菜品，无法删除' })
     }
+    const sql = 'update foodscate set children=? where id=?'
+    const arr = [children, 1]
+    sqlClient(sql, arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({
+          status: 200,
+          msg: '菜品分类删除成功'
+        })
+      } else {
+        res.send({
+          status: 500,
+          msg: '菜品分类删除失败'
+        })
+      }
+    })
   })
 })
 
@@ -917,7 +1007,12 @@ var storage = multer.diskStorage({
     cb(null, './upload/')
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname)
+    // 清洗文件名：防止路径穿越（../）与扩展名注入，只保留安全字符
+    const ext = path.extname(file.originalname).replace(/[^.\w]/g, '')
+    const base = path.basename(file.originalname, path.extname(file.originalname))
+      .replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '')
+      .slice(0, 40)
+    cb(null, Date.now() + '-' + (base || 'img') + ext)
   }
 })
 
@@ -1063,6 +1158,18 @@ router.get('/preUpdatefood', (req, res) => {
   })
 })
 
+// 订单商品明细
+router.get('/orderitems', (req, res) => {
+  const a = new URL(req.url, 'http://localhost:3000')
+  const orderId = a.searchParams.get('order_id')
+  if (!orderId) {
+    return res.send({ status: 400, msg: '缺少 order_id' })
+  }
+  sqlClient('select * from order_items where order_id=?', [orderId], result => {
+    res.send({ status: 200, result: result || [] })
+  })
+})
+
 // 订单列表
 router.get('/order', (req, res) => {
   paginate(req, res,
@@ -1100,6 +1207,73 @@ router.put('/updateOrderAddress', validateBody(Joi.object({
     } else {
       res.send({ status: 500, msg: '修改地址失败' })
     }
+  })
+})
+
+// 修改订单支付/发货状态（可单独或同时修改）
+router.put('/updateOrderStatus', validateBody(Joi.object({
+  order_id: num().required(),
+  pay_status: Joi.number().valid(0, 1).optional(),
+  is_send: Joi.number().valid(0, 1).optional()
+}).or('pay_status', 'is_send')), (req, res) => {
+  const orderId = req.body.order_id
+  const fields = []
+  const arr = []
+  if (req.body.pay_status !== undefined) {
+    fields.push('pay_status=?')
+    arr.push(req.body.pay_status)
+  }
+  if (req.body.is_send !== undefined) {
+    fields.push('is_send=?')
+    arr.push(req.body.is_send)
+  }
+  if (!fields.length) {
+    return res.send({ status: 400, msg: '未提供要修改的状态' })
+  }
+  arr.push(orderId)
+  sqlClient('select order_id from orders where order_id=?', [orderId], rows => {
+    if (!rows.length) {
+      return res.send({ status: 400, msg: '订单不存在' })
+    }
+    sqlClient('update orders set ' + fields.join(',') + ' where order_id=?', arr, result => {
+      if (result.affectedRows > 0) {
+        res.send({ status: 200, msg: '订单状态修改成功' })
+      } else {
+        res.send({ status: 500, msg: '订单状态修改失败' })
+      }
+    })
+  })
+})
+
+// 追加物流轨迹节点
+router.post('/addLogistics', validateBody(Joi.object({
+  order_id: num().required(),
+  context: Joi.string().min(1).max(100).required()
+})), (req, res) => {
+  const orderId = req.body.order_id
+  const context = req.body.context
+  sqlClient('select logistics from orders where order_id=?', [orderId], rows => {
+    if (!rows.length) {
+      return res.send({ status: 400, msg: '订单不存在' })
+    }
+    let list = []
+    try {
+      list = JSON.parse(rows[0].logistics || '[]')
+    } catch (e) {
+      list = []
+    }
+    const now = new Date()
+    const pad = n => String(n).padStart(2, '0')
+    const time = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+      ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds())
+    list.push({ time, context })
+    sqlClient('update orders set logistics=? where order_id=?', [JSON.stringify(list), orderId], result => {
+      if (result.affectedRows > 0) {
+        res.send({ status: 200, msg: '物流信息已更新' })
+      } else {
+        res.send({ status: 500, msg: '物流信息更新失败' })
+      }
+    })
   })
 })
 

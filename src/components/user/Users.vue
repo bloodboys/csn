@@ -17,7 +17,7 @@
                     </el-input>
                 </el-col>
                 <el-col :span="4">
-                    <el-button type="primary" v-if="isAdmin" @click="addDialogVisible=true">添加用户</el-button>
+                    <el-button type="primary" v-if="isAdmin" @click="showAddDialog">添加用户</el-button>
                 </el-col>
             </el-row>
 
@@ -72,6 +72,11 @@
                 </el-form-item>
                 <el-form-item label="密码" prop="password">
                     <el-input v-model="addForm.password"></el-input>
+                </el-form-item>
+                <el-form-item label="角色" prop="rid">
+                    <el-select v-model="addForm.rid" placeholder="请选择角色" style="width:100%">
+                        <el-option v-for="item in rolesList" :key="item.id" :label="item.roleName" :value="item.id"></el-option>
+                    </el-select>
                 </el-form-item>
                 <el-form-item label="邮箱" prop="email">
                     <el-input v-model="addForm.email"></el-input>
@@ -165,6 +170,7 @@ export default {
       addForm: {
         username: '',
         password: '',
+        rid: '',
         email: '',
         mobile: ''
       },
@@ -202,6 +208,12 @@ export default {
         {
           validator: checkEmail,
           trigger: 'blur'
+        }
+        ],
+        rid: [{
+          required: true,
+          message: '请选择角色',
+          trigger: 'change'
         }
         ],
         mobile: [{
@@ -318,9 +330,19 @@ export default {
         }
       })
     },
+    // 展示添加用户对话框（先加载角色列表）
+    showAddDialog () {
+      this.$api.roles().then((res) => {
+        if (res.data.status === 200) {
+          this.rolesList = res.data.result
+        }
+      })
+      this.addDialogVisible = true
+    },
     // 监听添加用户对话框的关闭事件
     addDialogClosed () {
       this.$refs.addFormRef.resetFields()
+      this.addForm.rid = ''
     },
     // 点击按钮添加新用户
     addUser () {
@@ -328,7 +350,7 @@ export default {
         if (!valid) return Error()
         // 可以发起添加用户的网络请求
         await this.$api.adduser({
-          rid: 3,
+          rid: this.addForm.rid,
           username: this.addForm.username,
           password: this.addForm.password,
           email: this.addForm.email,

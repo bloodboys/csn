@@ -88,7 +88,7 @@ describe('csn 后端接口测试', () => {
       const res = await request(app)
         .post('/api/adduser')
         .set('Authorization', adminToken)
-        .send({ rid: 3, username: 'tester1', password: 'abc123', mobile: '13612345678', email: 'not-an-email' })
+        .send({ rid: 2, username: 'tester1', password: 'abc123', mobile: '13612345678', email: 'not-an-email' })
       expect(res.status).toBe(400)
     })
 
@@ -96,7 +96,7 @@ describe('csn 后端接口测试', () => {
       const res = await request(app)
         .post('/api/adduser')
         .set('Authorization', adminToken)
-        .send({ rid: 3, username: 'tester2', password: 'abc123', mobile: '123', email: 't2@csn.com' })
+        .send({ rid: 2, username: 'tester2', password: 'abc123', mobile: '123', email: 't2@csn.com' })
       expect(res.status).toBe(400)
     })
   })
@@ -107,7 +107,7 @@ describe('csn 后端接口测试', () => {
       const addRes = await request(app)
         .post('/api/adduser')
         .set('Authorization', adminToken)
-        .send({ rid: 3, username: 'resttest', password: 'abc123', mobile: '13712345678', email: 'resttest@csn.com' })
+        .send({ rid: 2, username: 'resttest', password: 'abc123', mobile: '13712345678', email: 'resttest@csn.com' })
       expect(addRes.body.status).toBe(200)
 
       // 查询该用户 id

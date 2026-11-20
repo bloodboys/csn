@@ -334,6 +334,26 @@ const api = {
     return axios.put(base.baseUrl + base.updateOrderAddress, params)
   },
   /**
+     * 订单商品明细
+     */
+  orderitems (params) {
+    return axios.get(base.baseUrl + base.orderitems, {
+      params
+    })
+  },
+  /**
+     * 修改订单支付/发货状态
+     */
+  updateOrderStatus (params) {
+    return axios.put(base.baseUrl + base.updateOrderStatus, params)
+  },
+  /**
+     * 追加物流轨迹
+     */
+  addLogistics (params) {
+    return axios.post(base.baseUrl + base.addLogistics, params)
+  },
+  /**
      * 数据报表
      */
   report (params) {
