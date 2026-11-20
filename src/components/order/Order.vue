@@ -21,16 +21,31 @@
                 <el-table-column type="index"></el-table-column>
                 <el-table-column label="订单编号" prop="order_number"></el-table-column>
                 <el-table-column label="订单价格" prop="order_price"></el-table-column>
+                <el-table-column label="下单顾客" width="120px">
+                    <template slot-scope="scope">
+                        <span v-if="scope.row.customer_name">{{ scope.row.customer_name }}</span>
+                        <span v-else style="color:#bbb;">后台代下单</span>
+                    </template>
+                </el-table-column>
                 <el-table-column label="是否付款" prop="pay_status">
                     <template slot-scope="scope">
-                        <el-tag type="success" v-if="scope.row.pay_status === 1">已付款</el-tag>
+                        <el-tag type="info" v-if="scope.row.order_status === 1">已取消</el-tag>
+                        <el-tag type="success" v-else-if="scope.row.pay_status === 1">已付款</el-tag>
                         <el-tag type="danger" v-else>未付款</el-tag>
                     </template>
                 </el-table-column>
                 <el-table-column label="是否发货" prop="is_send">
                     <template slot-scope="scope">
-                        <el-tag type="success" v-if="scope.row.is_send === 1">已发货</el-tag>
+                        <el-tag type="info" v-if="scope.row.order_status === 1">—</el-tag>
+                        <el-tag type="success" v-else-if="scope.row.is_send === 1">已发货</el-tag>
                         <el-tag type="info" v-else>未发货</el-tag>
+                    </template>
+                </el-table-column>
+                <el-table-column label="物流节点" width="120px">
+                    <template slot-scope="scope">
+                        <el-tag size="small" :type="scope.row.logi_finished ? 'success' : 'warning'">
+                            {{ scope.row.logi_status || '—' }}
+                        </el-tag>
                     </template>
                 </el-table-column>
                 <el-table-column label="收货地址" prop="address" min-width="200px">
@@ -43,12 +58,13 @@
                         {{scope.row.create_time | dateFormat}}
                     </template>
                 </el-table-column>
-                <el-table-column label="操作" width="230px">
+                <el-table-column label="操作" width="280px">
                     <template v-slot="scope">
                         <el-button type="primary" icon="el-icon-edit" size="mini" v-if="isAdmin" @click="showBox(scope.row)" title="修改地址"></el-button>
                         <el-button type="warning" icon="el-icon-goods" size="mini" @click="showItems(scope.row)" title="商品明细"></el-button>
                         <el-button type="info" icon="el-icon-s-tools" size="mini" v-if="isAdmin" @click="showStatus(scope.row)" title="修改状态"></el-button>
                         <el-button type="success" icon="el-icon-location" size="mini" @click="showProgressBox(scope.row)" title="物流进度"></el-button>
+                        <el-button class="op-cancel" type="danger" plain icon="el-icon-circle-close" size="mini" v-if="isAdmin && scope.row.order_status !== 1 && scope.row.is_send !== 1" @click="cancelOrder(scope.row)" title="取消订单"></el-button>
                     </template>
                 </el-table-column>
             </el-table>
@@ -89,6 +105,12 @@
             <el-table :data="itemsList" border stripe>
                 <el-table-column type="index"></el-table-column>
                 <el-table-column label="商品名称" prop="foods_name"></el-table-column>
+                <el-table-column label="规格" width="140px">
+                    <template slot-scope="scope">
+                        <span v-if="scope.row.attr_text" style="color:#ff6b35">{{ scope.row.attr_text }}</span>
+                        <span v-else style="color:#c0c4cc">—</span>
+                    </template>
+                </el-table-column>
                 <el-table-column label="单价(元)" prop="foods_price"></el-table-column>
                 <el-table-column label="数量" prop="count"></el-table-column>
                 <el-table-column label="小计(元)">
@@ -124,20 +146,19 @@
                 :visible.sync="progressVisible"
                 width="50%"
         >
-            <!-- 时间线 -->
+            <!-- 时间线（自动推算节点，三态） -->
             <el-timeline>
                 <el-timeline-item
                         v-for="(activity, index) in this.progressInfo"
                         :key="index"
-                        :timestamp="activity.time">
-                    {{activity.context}}
+                        :timestamp="activity.time"
+                        :color="activity.status === 'done' ? '#67C23A' : (activity.status === 'current' ? '#E6A23C' : '#C0C4CC')">
+                    <span :class="{ 'logi-current': activity.status === 'current' }">{{activity.context}}</span>
+                    <el-tag v-if="activity.status === 'current'" size="mini" type="warning" style="margin-left:8px;">进行中</el-tag>
+                    <el-tag v-else-if="activity.status === 'done'" size="mini" type="success" style="margin-left:8px;">已完成</el-tag>
                 </el-timeline-item>
             </el-timeline>
             <div v-if="!progressInfo.length" style="text-align:center;color:#999;padding:10px;">暂无物流信息</div>
-            <div v-if="isAdmin" style="margin-top:15px;">
-                <el-input v-model="logisticsText" placeholder="输入物流节点，如：商家已接单" style="width:70%"></el-input>
-                <el-button type="primary" style="margin-left:10px;" @click="addLogistics">添加节点</el-button>
-            </div>
         </el-dialog>
     </div>
 </template>
@@ -173,7 +194,6 @@ export default {
       cityData: cityData,
       progressVisible: false,
       progressInfo: [],
-      logisticsText: '',
       itemsVisible: false,
       itemsList: [],
       statusVisible: false,
@@ -301,43 +321,39 @@ export default {
         }
       })
     },
+    // 取消订单（回补库存，仅未发货可取消）
+    cancelOrder (row) {
+      this.$confirm('确定取消订单 ' + row.order_number + ' 吗？取消后将回补库存。', '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '再想想',
+        type: 'warning'
+      }).then(() => {
+        this.$api.cancelOrder({ order_id: row.order_id }).then((res) => {
+          if (res.data.status === 200) {
+            this.$message.success('订单已取消，库存已回补')
+            this.getOrderList()
+          } else {
+            this.$message.error(res.data.msg || '取消失败')
+          }
+        })
+      }).catch(() => {})
+    },
     // 物流进度展示
     showProgressBox (row) {
       this.currentOrder = row
-      try {
-        this.progressInfo = JSON.parse(row.logistics || '[]')
-      } catch (e) {
-        this.progressInfo = []
-      }
-      this.logisticsText = ''
-      this.progressVisible = true
-    },
-    // 追加物流节点
-    addLogistics () {
-      if (!this.logisticsText.trim()) {
-        return this.$message.error('请输入物流内容')
-      }
-      const context = this.logisticsText.trim()
-      this.$api.addLogistics({
-        order_id: this.currentOrder.order_id,
-        context: context
-      }).then((res) => {
-        if (res.data.status === 200) {
-          this.$message.success('物流信息已更新')
-          this.logisticsText = ''
-          // 本地追加时间线节点，并同步订单列表
-          this.progressInfo.push({ time: this.nowStr(), context: context })
-          this.getOrderList()
-        } else {
-          this.$message.error(res.data.msg || '物流更新失败')
+      // 优先用后端自动推算的完整节点（三态）
+      if (Array.isArray(row.logi_steps) && row.logi_steps.length) {
+        this.progressInfo = row.logi_steps
+      } else {
+        // 回退：老订单无 logi_steps 时，解析静态 logistics 并统一视为已完成
+        try {
+          const raw = JSON.parse(row.logistics || '[]')
+          this.progressInfo = raw.map(x => ({ context: x.context, time: x.time, status: 'done' }))
+        } catch (e) {
+          this.progressInfo = []
         }
-      })
-    },
-    nowStr () {
-      const now = new Date()
-      const pad = n => String(n).padStart(2, '0')
-      return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
-        ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds())
+      }
+      this.progressVisible = true
     },
     // 订单查询
     onSubmitSearch () {
@@ -351,5 +367,29 @@ export default {
 <style lang="less" scoped>
     .el-cascader {
         width: 100%;
+    }
+    .logi-current {
+        font-weight: 600;
+        color: #E6A23C;
+    }
+    // 取消订单按钮：与前面编辑/查看类按钮用竖线分隔，避免误点
+    .el-button.op-cancel {
+        margin-left: 20px;
+        position: relative;
+    }
+    .el-button.op-cancel::before {
+        content: '';
+        position: absolute;
+        left: -11px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 1px;
+        height: 14px;
+        background: #dcdfe6;
+    }
+    .el-button.op-cancel:hover {
+        background: #fef0f0;
+        border-color: #f56c6c;
+        color: #f56c6c;
     }
 </style>

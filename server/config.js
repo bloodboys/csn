@@ -28,5 +28,6 @@ const sqlClient = (sql, arr, callback) => {
 }
 
 sqlClient.close = () => pool.end()
+sqlClient.pool = pool
 
 module.exports = sqlClient

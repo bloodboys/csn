@@ -354,6 +354,12 @@ const api = {
     return axios.post(base.baseUrl + base.addLogistics, params)
   },
   /**
+     * 取消订单（回补库存）
+     */
+  cancelOrder (params) {
+    return axios.post(base.baseUrl + base.cancelOrder, params)
+  },
+  /**
      * 数据报表
      */
   report (params) {

@@ -19,18 +19,34 @@ const loginAttempts = new Map() // username -> { count, lockedUntil }
 const MAX_LOGIN_FAIL = 5
 const LOGIN_LOCK_MS = 10 * 60 * 1000
 const logger = require('./logger')
+const { computeLogistics } = require('./logistics')
 
 // 分页查询辅助：执行列表查询 + 总数查询，返回 { status, result, total }
-const paginate = (req, res, listSql, listArgs, countSql, countArgs) => {
+const paginate = (req, res, listSql, listArgs, countSql, countArgs, decorate) => {
   const a = new URL(req.url, 'http://localhost:3000')
   const pagenum = parseInt(a.searchParams.get('pagenum')) || 1
   const pagesize = parseInt(a.searchParams.get('pagesize')) || 10
   const offset = (pagenum - 1) * pagesize
   sqlClient(listSql + ' limit ?,?', (listArgs || []).concat([offset, pagesize]), result => {
     sqlClient(countSql, countArgs || null, countRes => {
-      res.send({ status: 200, result, total: (countRes && countRes[0]) ? countRes[0].total : 0 })
+      const list = decorate ? result.map(decorate) : result
+      res.send({ status: 200, result: list, total: (countRes && countRes[0]) ? countRes[0].total : 0 })
     })
   })
+}
+
+// 订单列表装饰：附带当前物流节点（short）与是否送达
+const decorateOrder = (o) => {
+  const logi = computeLogistics(o.create_time, Number(o.pay_status) === 1, o.pay_time)
+  // 已取消显示「已取消」；未付款显示「待支付」；已付款按物流节点显示
+  o.logi_status = o.order_status === 1
+    ? '已取消'
+    : (Number(o.pay_status) !== 1 ? '待支付' : logi.steps[logi.current].short)
+  o.logi_finished = logi.finished
+  o.logi_steps = logi.steps // 完整节点（context/time/status 三态），供弹窗时间线渲染
+  // 有效发货状态：手动发货 OR 物流已自动发货（骑手取餐）；已取消订单视为未发货
+  o.is_send = (o.order_status !== 1 && (o.is_send === 1 || logi.autoSend)) ? 1 : 0
+  return o
 }
 
 // 权限树辅助：读取 allrights 树（id=1）
@@ -1173,10 +1189,11 @@ router.get('/orderitems', (req, res) => {
 // 订单列表
 router.get('/order', (req, res) => {
   paginate(req, res,
-    'select * from orders',
+    'select o.*, u.username as customer_name from orders o left join user u on o.user_id = u.id',
     [],
     'select count(*) as total from orders',
-    null
+    null,
+    decorateOrder
   )
 })
 
@@ -1186,10 +1203,11 @@ router.get('/ordersearch', (req, res) => {
   const a = new URL(req.url, 'http://localhost:3000')
   const like = '%' + (a.searchParams.get('search') || '') + '%'
   paginate(req, res,
-    'select * from orders where order_number like ?',
+    'select o.*, u.username as customer_name from orders o left join user u on o.user_id = u.id where o.order_number like ?',
     [like],
     'select count(*) as total from orders where order_number like ?',
-    [like]
+    [like],
+    decorateOrder
   )
 })
 
@@ -1210,31 +1228,46 @@ router.put('/updateOrderAddress', validateBody(Joi.object({
   })
 })
 
-// 修改订单支付/发货状态（可单独或同时修改）
+// 修改订单支付/发货状态（可单独或同时修改；带状态机约束）
 router.put('/updateOrderStatus', validateBody(Joi.object({
   order_id: num().required(),
   pay_status: Joi.number().valid(0, 1).optional(),
   is_send: Joi.number().valid(0, 1).optional()
 }).or('pay_status', 'is_send')), (req, res) => {
   const orderId = req.body.order_id
-  const fields = []
-  const arr = []
-  if (req.body.pay_status !== undefined) {
-    fields.push('pay_status=?')
-    arr.push(req.body.pay_status)
-  }
-  if (req.body.is_send !== undefined) {
-    fields.push('is_send=?')
-    arr.push(req.body.is_send)
-  }
-  if (!fields.length) {
-    return res.send({ status: 400, msg: '未提供要修改的状态' })
-  }
-  arr.push(orderId)
-  sqlClient('select order_id from orders where order_id=?', [orderId], rows => {
+  sqlClient('select * from orders where order_id=?', [orderId], rows => {
     if (!rows.length) {
       return res.send({ status: 400, msg: '订单不存在' })
     }
+    const o = rows[0]
+    if (o.order_status === 1) {
+      return res.send({ status: 400, msg: '已取消订单不能修改状态' })
+    }
+    const logi = computeLogistics(o.create_time, Number(o.pay_status) === 1, o.pay_time)
+    const effSend = (o.order_status !== 1 && (o.is_send === 1 || logi.autoSend)) ? 1 : 0
+    const newPay = req.body.pay_status !== undefined ? req.body.pay_status : o.pay_status
+    const newSend = req.body.is_send !== undefined ? req.body.is_send : effSend
+    // 状态机约束：禁止非法跳转
+    if (newSend === 1 && newPay !== 1) {
+      return res.send({ status: 400, msg: '未付款订单不能发货，请先确认已付款' })
+    }
+    if (newPay === 0 && o.pay_status === 1) {
+      return res.send({ status: 400, msg: '不能将已付款订单改回未付款，如需退款请使用「取消订单」' })
+    }
+    if (newSend === 0 && effSend === 1) {
+      return res.send({ status: 400, msg: '已发货订单不能撤回发货状态' })
+    }
+    const fields = []
+    const arr = []
+    if (req.body.pay_status !== undefined) {
+      fields.push('pay_status=?')
+      arr.push(req.body.pay_status)
+    }
+    if (req.body.is_send !== undefined) {
+      fields.push('is_send=?')
+      arr.push(req.body.is_send)
+    }
+    arr.push(orderId)
     sqlClient('update orders set ' + fields.join(',') + ' where order_id=?', arr, result => {
       if (result.affectedRows > 0) {
         res.send({ status: 200, msg: '订单状态修改成功' })
@@ -1277,6 +1310,44 @@ router.post('/addLogistics', validateBody(Joi.object({
   })
 })
 
+// 后台取消订单：回补库存并标记已取消（仅未发货可取消；已付款视为退款取消）
+router.post('/cancelOrder', validateBody(Joi.object({
+  order_id: num().required()
+})), (req, res) => {
+  const orderId = req.body.order_id
+  sqlClient.pool.getConnection((err, conn) => {
+    if (err) {
+      return res.send({ status: 500, msg: '数据库连接失败' })
+    }
+    const cq = (sql, arr) => new Promise((resolve, reject) => {
+      conn.query(sql, arr || [], (e, r) => (e ? reject(e) : resolve(r)))
+    })
+    ;(async () => {
+      try {
+        await cq('START TRANSACTION')
+        const rows = await cq('select * from orders where order_id=? for update', [orderId])
+        if (!rows.length) throw new Error('订单不存在')
+        const o = rows[0]
+        if (o.order_status === 1) throw new Error('订单已取消，请勿重复操作')
+        const logi = computeLogistics(o.create_time, Number(o.pay_status) === 1, o.pay_time)
+        if (o.is_send === 1 || logi.autoSend) throw new Error('已发货订单无法直接取消（需先处理退款退货）')
+        const items = await cq('select foods_id, count from order_items where order_id=?', [orderId])
+        for (const it of items) {
+          await cq('update food set foods_number = foods_number + ? where foods_id=?', [it.count, it.foods_id])
+        }
+        await cq('update orders set order_status=1 where order_id=?', [orderId])
+        await cq('COMMIT')
+        res.send({ status: 200, msg: '订单已取消，库存已回补' })
+      } catch (e) {
+        await cq('ROLLBACK').catch(() => {})
+        res.send({ status: 400, msg: e.message || '取消失败' })
+      } finally {
+        conn.release()
+      }
+    })()
+  })
+})
+
 // 数据报表
 router.get('/report', (req, res) => {
   const sql = 'select * from report where id '
@@ -1309,18 +1380,28 @@ router.get('/statistics', (req, res) => {
     q('select count(*) as total from user'),
     q('select count(*) as total, coalesce(sum(cast(order_price as decimal(10,2))),0) as amount from orders'),
     q('select count(*) as total from food'),
-    q('select pay_status, count(*) as c from orders group by pay_status'),
-    q('select is_send, count(*) as c from orders group by is_send'),
+    q('select pay_status, order_status, count(*) as c from orders group by pay_status, order_status'),
+    q('select order_status, is_send, pay_status, create_time, pay_time from orders'),
     q('select coalesce(role_name,"未知") as name, count(*) as value from user group by role_name'),
     q('select from_unixtime(create_time, "%Y-%m-%d") as d, count(*) as c, coalesce(sum(cast(order_price as decimal(10,2))),0) as amount from orders where create_time >= ? group by d order by d', [sevenDaysAgo])
   ]).then(([users, orders, foods, payStatus, sendStatus, roleDist, trend]) => {
-    const pick = (rows, key) => {
-      const m = {}
-      rows.forEach(r => { m[r[key]] = r })
-      return m
-    }
-    const payMap = pick(payStatus, 'pay_status')
-    const sendMap = pick(sendStatus, 'is_send')
+    // 有效付款状态统计：已取消订单不计入付款统计
+    let paidOrders = 0
+    let unpaidOrders = 0
+    payStatus.forEach(o => {
+      if (o.order_status === 1) return
+      if (o.pay_status === 1) paidOrders += o.c
+      else unpaidOrders += o.c
+    })
+    // 有效发货状态统计：手动发货 OR 物流自动发货（骑手取餐）；已取消订单不计入发货统计
+    let sentOrders = 0
+    let unsentOrders = 0
+    sendStatus.forEach(o => {
+      if (o.order_status === 1) return
+      const logi = computeLogistics(o.create_time, Number(o.pay_status) === 1, o.pay_time)
+      if (o.is_send === 1 || logi.autoSend) sentOrders++
+      else unsentOrders++
+    })
 
     // 补全近 7 天日期，无订单的补 0，保证趋势图连续
     const days = []
@@ -1344,10 +1425,10 @@ router.get('/statistics', (req, res) => {
         totalOrders: orders[0] ? orders[0].total : 0,
         totalFoods: foods[0] ? foods[0].total : 0,
         totalAmount: orders[0] ? Number(orders[0].amount) : 0,
-        paidOrders: payMap['1'] ? payMap['1'].c : 0,
-        unpaidOrders: payMap['0'] ? payMap['0'].c : 0,
-        sentOrders: sendMap['1'] ? sendMap['1'].c : 0,
-        unsentOrders: sendMap['0'] ? sendMap['0'].c : 0,
+        paidOrders,
+        unpaidOrders,
+        sentOrders,
+        unsentOrders,
         roleDist,
         orderTrend
       }
